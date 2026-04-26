@@ -126,8 +126,132 @@ User=root
 WantedBy=multi-user.target
 """
 
+_LANDING_PAGE = """\
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ign8mail</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0d0f14;
+      --surface: #161b25;
+      --border: #1e2738;
+      --accent: #3b82f6;
+      --accent-dim: #1d4ed8;
+      --text: #e2e8f0;
+      --muted: #64748b;
+      --flame: #f97316;
+    }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 1rem;
+      padding: 3rem 3.5rem;
+      max-width: 520px;
+      width: 100%;
+      text-align: center;
+    }
+    .logo {
+      font-size: 2.4rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      margin-bottom: 0.25rem;
+    }
+    .logo span { color: var(--flame); }
+    .tagline {
+      color: var(--muted);
+      font-size: 0.8rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      margin-bottom: 2.5rem;
+    }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.6rem;
+      background: rgba(59,130,246,.08);
+      border: 1px solid rgba(59,130,246,.2);
+      border-radius: 2rem;
+      padding: 0.5rem 1.2rem;
+      font-size: 0.85rem;
+      color: var(--accent);
+      margin-bottom: 2rem;
+    }
+    .dot {
+      width: 7px; height: 7px;
+      background: var(--accent);
+      border-radius: 50%;
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+    .desc {
+      color: var(--muted);
+      font-size: 0.82rem;
+      line-height: 1.8;
+    }
+    .desc code {
+      color: var(--text);
+      background: var(--border);
+      border-radius: 4px;
+      padding: 0.1em 0.4em;
+      font-size: 0.9em;
+    }
+    .divider {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 2rem 0;
+    }
+    .proto {
+      display: flex;
+      justify-content: center;
+      gap: 1.5rem;
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+    .proto span { display: flex; flex-direction: column; gap: 0.2rem; }
+    .proto strong { color: var(--text); font-size: 0.8rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">ign<span>8</span>mail</div>
+    <div class="tagline">production mail infrastructure</div>
+    <div class="status">
+      <div class="dot"></div>
+      under construction
+    </div>
+    <p class="desc">
+      This server is being configured.<br>
+      SMTP and IMAP services are <code>active</code>.
+    </p>
+    <hr class="divider">
+    <div class="proto">
+      <span><strong>SMTP</strong>port 587 · STARTTLS</span>
+      <span><strong>IMAP</strong>port 993 · SSL/TLS</span>
+    </div>
+  </div>
+</body>
+</html>
+"""
+
 # Packages installed on the server
-PACKAGES = "postfix postfix-mysql dovecot-core dovecot-imapd dovecot-pop3d rspamd certbot redis-server"
+PACKAGES = "postfix postfix-mysql dovecot-core dovecot-imapd dovecot-pop3d rspamd certbot nginx redis-server"
 
 _FOLDER_MAP = {
     "Inbox": "",
@@ -321,6 +445,47 @@ class MailServerSetup:
             f"grep -qF '^{username} ' /etc/postfix/local_recipients || "
             f"echo '{username} {username}' >> /etc/postfix/local_recipients && "
             f"postmap /etc/postfix/local_recipients && systemctl reload postfix"
+        )
+
+    def configure_nginx(self, domain: str) -> None:
+        """Install the landing page and configure nginx with the existing Let's Encrypt cert."""
+        assert self._ssh, "Call connect() first"
+        self._exec("apt-get install -y -qq nginx")
+        sftp = self._ssh.open_sftp()
+        try:
+            self._exec("mkdir -p /var/www/ign8mail")
+            sftp.putfo(io.BytesIO(_LANDING_PAGE.encode()), "/var/www/ign8mail/index.html")
+            nginx_conf = (
+                "server {\n"
+                "    listen 80;\n"
+                "    listen [::]:80;\n"
+                f"    server_name mail.{domain} {domain};\n"
+                "    location /.well-known/acme-challenge/ { root /var/www/html; }\n"
+                "    location / { return 301 https://$host$request_uri; }\n"
+                "}\n"
+                "\n"
+                "server {\n"
+                "    listen 443 ssl;\n"
+                "    listen [::]:443 ssl;\n"
+                f"    server_name mail.{domain};\n"
+                "\n"
+                f"    ssl_certificate     /etc/letsencrypt/live/mail.{domain}/fullchain.pem;\n"
+                f"    ssl_certificate_key /etc/letsencrypt/live/mail.{domain}/privkey.pem;\n"
+                "    ssl_protocols TLSv1.2 TLSv1.3;\n"
+                "    ssl_prefer_server_ciphers on;\n"
+                "\n"
+                "    root  /var/www/ign8mail;\n"
+                "    index index.html;\n"
+                "    location / { try_files $uri $uri/ =404; }\n"
+                "}\n"
+            )
+            sftp.putfo(io.BytesIO(nginx_conf.encode()), "/etc/nginx/sites-available/ign8mail")
+        finally:
+            sftp.close()
+        self._exec(
+            "ln -sf /etc/nginx/sites-available/ign8mail /etc/nginx/sites-enabled/ign8mail && "
+            "rm -f /etc/nginx/sites-enabled/default && "
+            "nginx -t && systemctl enable nginx && systemctl restart nginx"
         )
 
     def configure_dkim_signing(self, domain: str, dkim_private_key_pem: bytes) -> None:
