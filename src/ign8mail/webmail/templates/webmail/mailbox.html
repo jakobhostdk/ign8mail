@@ -1,0 +1,93 @@
+{% extends "webmail/base.html" %}
+
+{% block title %}{{ name }}@{{ domain }} — ign8mail{% endblock %}
+
+{% block extra_css %}
+<style>
+  .msg-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .msg-row {
+    display: grid;
+    grid-template-columns: 1fr 2fr auto;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.65rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+    text-decoration: none;
+    color: var(--text);
+    transition: background 0.1s;
+  }
+  .msg-row:hover { background: var(--surface2); }
+  .msg-row.unread { font-weight: 600; }
+  .msg-row.unread .msg-subject { color: var(--text); }
+  .msg-row:not(.unread) { color: var(--muted2); }
+  .msg-from {
+    font-size: 0.8rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .msg-subject {
+    font-size: 0.82rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .msg-date {
+    font-size: 0.72rem;
+    color: var(--muted);
+    white-space: nowrap;
+    font-family: var(--mono);
+  }
+  .unseen-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    flex-shrink: 0;
+    display: inline-block;
+    margin-right: 0.25rem;
+  }
+  .empty { padding: 2rem 1.5rem; color: var(--muted); font-size: 0.85rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>{{ name }}</h1>
+  <span class="sub">{{ email }}</span>
+  <span class="tag tag-{{ status }}">{{ status }}</span>
+  <div class="actions">
+    {% if status != 'disabled' %}
+    <form method="post" action="{% url 'mailbox_action' name %}" style="display:inline">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="disable">
+      <button class="btn btn-warn" type="submit"
+              onclick="return confirm('Disable {{ name }}? Mail will be rejected.')">Disable</button>
+    </form>
+    {% endif %}
+    <form method="post" action="{% url 'mailbox_action' name %}" style="display:inline">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="silence">
+      <button class="btn btn-danger" type="submit"
+              onclick="return confirm('Silence and delete {{ name }}? This cannot be undone.')">Silence</button>
+    </form>
+  </div>
+</div>
+{% if messages %}
+<div>
+  {% for msg in messages %}
+  <a class="msg-row {% if not msg.seen %}unread{% endif %}" href="{% url 'message' name msg.seq %}">
+    <span class="msg-from">
+      {% if not msg.seen %}<span class="unseen-dot"></span>{% endif %}{{ msg.sender }}
+    </span>
+    <span class="msg-subject">{{ msg.subject }}</span>
+    <span class="msg-date">{{ msg.date }}</span>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty">No messages.</div>
+{% endif %}
+{% endblock %}

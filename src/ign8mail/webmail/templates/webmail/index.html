@@ -1,0 +1,81 @@
+{% extends "webmail/base.html" %}
+
+{% block title %}ign8mail — Inbox{% endblock %}
+
+{% block extra_css %}
+<style>
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 1rem;
+    padding: 1.25rem;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem;
+    text-decoration: none;
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .card:hover { border-color: var(--border2); background: var(--surface2); }
+  .card-top {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .card-name {
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    font-weight: 600;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .card-count {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--accent);
+    line-height: 1;
+  }
+  .card-count.zero { color: var(--muted); font-size: 1rem; font-weight: 400; }
+  .card-count.err { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
+  .card-label {
+    font-size: 0.7rem;
+    color: var(--muted);
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>All mailboxes</h1>
+  <span class="sub">{{ domain }}</span>
+</div>
+<div class="grid">
+  {% for mb in mailboxes %}
+  <a class="card" href="{% url 'mailbox' mb.name %}">
+    <div class="card-top">
+      <span class="status-dot {% if mb.status == 'pending' or mb.status == 'enabled' %}dot-pending{% elif mb.status == 'disabled' %}dot-disabled{% elif mb.is_autocreated %}dot-autocreated{% else %}dot-active{% endif %}"></span>
+      <span class="card-name">{{ mb.name }}</span>
+      {% if mb.status != 'active' %}<span class="tag tag-{{ mb.status }}">{{ mb.status }}</span>{% endif %}
+    </div>
+    {% if not mb.reachable %}
+      <div class="card-count err">unreachable</div>
+    {% elif mb.unread > 0 %}
+      <div class="card-count">{{ mb.unread }}</div>
+      <div class="card-label">unread</div>
+    {% else %}
+      <div class="card-count zero">no new mail</div>
+    {% endif %}
+  </a>
+  {% empty %}
+  <p style="color:var(--muted);padding:1rem">No mailboxes configured.</p>
+  {% endfor %}
+</div>
+{% endblock %}

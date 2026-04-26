@@ -1170,6 +1170,44 @@ def vault_init(
     ))
 
 
+@app.command()
+def webmail(
+    domain: str = typer.Option(..., envvar="IGN8_DOMAIN", help="Mail domain"),
+    imap_host: str = typer.Option("", help="IMAP hostname (default: mail.<domain>)"),
+    port: int = typer.Option(8000, help="Local port to serve on"),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+) -> None:
+    """Start the webmail interface in a local browser."""
+    host = imap_host or f"mail.{domain}"
+
+    if not _vault.exists():
+        console.print("[red]Error:[/red] Vault not found — run `ign8mail vault-init` first.")
+        raise typer.Exit(1)
+
+    vault_data = vault.load(_vault)
+    passwords: dict[str, str] = vault_data.get("mailbox_passwords") or {}
+    autocreated: dict = vault_data.get("autocreated_mailboxes") or {}
+
+    if not passwords:
+        console.print("[yellow]No mailbox passwords in vault — add mailboxes first.[/yellow]")
+        raise typer.Exit(1)
+
+    console.print(
+        f"Starting webmail on [bold]http://127.0.0.1:{port}[/bold] — press Ctrl+C to stop."
+    )
+
+    from ign8mail.webmail.runner import start
+    start(
+        domain=domain,
+        imap_host=host,
+        passwords=passwords,
+        autocreated=autocreated,
+        work_dir=work_dir,
+        vault_path=_vault,
+        port=port,
+    )
+
+
 def _check_mail(host: str, username: str, password: str, domain: str) -> dict:
     """Send a probe email via SMTP and verify delivery via IMAP. Returns a result dict."""
     import imaplib

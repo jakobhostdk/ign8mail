@@ -1,0 +1,86 @@
+{% extends "webmail/base.html" %}
+
+{% block title %}{{ msg.subject }} — ign8mail{% endblock %}
+
+{% block extra_css %}
+<style>
+  .msg-header {
+    padding: 1.25rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .msg-subject-line {
+    font-size: 1rem;
+    font-weight: 600;
+  }
+  .msg-meta {
+    display: flex;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+  }
+  .meta-item {
+    font-size: 0.78rem;
+    color: var(--muted);
+  }
+  .meta-item strong {
+    color: var(--muted2);
+    font-weight: 500;
+  }
+  .msg-body {
+    flex: 1;
+    padding: 1.25rem 1.5rem;
+    overflow-y: auto;
+  }
+  .body-text {
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text);
+    line-height: 1.6;
+  }
+  .body-html-frame {
+    width: 100%;
+    border: none;
+    min-height: 500px;
+    background: #fff;
+    border-radius: 6px;
+  }
+  .back-link {
+    font-size: 0.78rem;
+    color: var(--muted);
+    text-decoration: none;
+    padding: 0.75rem 1.5rem;
+    display: inline-block;
+    border-bottom: 1px solid var(--border);
+    width: 100%;
+  }
+  .back-link:hover { color: var(--text); }
+</style>
+{% endblock %}
+
+{% block content %}
+<a class="back-link" href="{% url 'mailbox' name %}">← {{ name }}@{{ domain }}</a>
+<div class="msg-header">
+  <div class="msg-subject-line">{{ msg.subject }}</div>
+  <div class="msg-meta">
+    <span class="meta-item"><strong>From</strong> {{ msg.sender }}</span>
+    <span class="meta-item"><strong>To</strong> {{ email }}</span>
+    <span class="meta-item"><strong>Date</strong> {{ msg.date }}</span>
+  </div>
+</div>
+<div class="msg-body">
+  {% if msg.body_html %}
+  <iframe class="body-html-frame"
+          sandbox="allow-same-origin"
+          srcdoc="{{ msg.body_html|escape }}"
+          onload="this.style.height=this.contentDocument.body.scrollHeight+'px'"></iframe>
+  {% elif msg.body_text %}
+  <div class="body-text">{{ msg.body_text }}</div>
+  {% else %}
+  <p style="color:var(--muted);font-size:0.85rem">No message body.</p>
+  {% endif %}
+</div>
+{% endblock %}
