@@ -42,12 +42,13 @@ def inject_env(vault_path: Path) -> None:
 
 
 def get_mailbox_password(username: str, vault_path: Path) -> str:
-    """Return the plaintext password for *username* from vault mailbox_passwords."""
-    data = load(vault_path)
+    """Return the password for *username*, generating and saving one if absent."""
+    import secrets
+
+    data = load(vault_path) if vault_path.exists() else {}
     pw = (data.get("mailbox_passwords") or {}).get(username)
     if not pw:
-        raise RuntimeError(
-            f"No password found for '{username}' in vault.\n"
-            f"Add it under  mailbox_passwords.{username}  in {vault_path}."
-        )
+        pw = secrets.token_hex(12)
+        data.setdefault("mailbox_passwords", {})[username] = pw
+        save(data, vault_path)
     return str(pw)
