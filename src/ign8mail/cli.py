@@ -1,0 +1,1007 @@
+"""CLI entry point: `ign8mail up` provisions the full mail server stack."""
+
+import enum
+import json
+import os
+import re
+import secrets
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Optional
+
+import typer
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
+from ign8mail import vault
+from ign8mail.config import Config
+from ign8mail.dns.cloudflare import CloudflareDNS
+from ign8mail.infra import hetzner
+from ign8mail.keys import dkim_public_key_base64, save_keypair
+from ign8mail.mailserver.setup import MailServerSetup
+from ign8mail import thunderbird
+
+app = typer.Typer(name="ign8mail", help="Ignite a production mail server in minutes.")
+console = Console()
+
+# Active vault path — set by @app.callback() before any subcommand runs.
+_vault: Path = Path(".ign8mail/vault.yml")
+
+
+@app.callback()
+def _main(
+    vault_file: Optional[Path] = typer.Option(
+        None,
+        "--vault",
+        envvar="IGN8_VAULT",
+        help="Ansible Vault file (default: .ign8mail/vault.yml)",
+        show_default=False,
+    ),
+) -> None:
+    """Ignite a production mail server in minutes."""
+    global _vault
+    if vault_file:
+        _vault = vault_file
+    if _vault.exists():
+        vault.inject_env(_vault)
+
+
+class _Format(str, enum.Enum):
+    pretty = "pretty"
+    json = "json"
+
+
+@app.command()
+def up(
+    domain: str = typer.Option(..., envvar="IGN8_DOMAIN", help="Your mail domain (e.g. example.com)"),
+    admin_email: str = typer.Option(..., envvar="IGN8_ADMIN_EMAIL", help="Admin / certbot notification email"),
+    hetzner_token: str = typer.Option(..., envvar="IGN8_HETZNER_TOKEN", help="Hetzner Cloud API token"),
+    cloudflare_token: str = typer.Option(..., envvar="IGN8_CLOUDFLARE_TOKEN", help="Cloudflare API token"),
+    cloudflare_zone_id: str = typer.Option(..., envvar="IGN8_CLOUDFLARE_ZONE_ID", help="Cloudflare Zone ID"),
+    cloudflare_email: str = typer.Option("", envvar="IGN8_CLOUDFLARE_EMAIL", help="Cloudflare account email (only for Global API Key auth)"),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory for keys and state"),
+) -> None:
+    """Provision a complete mail server: Hetzner VM + Cloudflare DNS + Postfix/Dovecot."""
+
+    cfg = Config(
+        domain=domain,
+        admin_email=admin_email,  # type: ignore[arg-type]
+        hetzner_token=hetzner_token,
+        cloudflare_token=cloudflare_token,
+        cloudflare_zone_id=cloudflare_zone_id,
+        cloudflare_email=cloudflare_email,
+    )
+
+    console.print(Panel(f"[bold]ign8mail[/bold] — igniting [cyan]{cfg.domain}[/cyan]"))
+
+    # 1. SSH keypair
+    console.print("[1/4] Generating SSH keypair...")
+    keys_dir = work_dir / "keys"
+    priv_path, pub_path = save_keypair(keys_dir)
+    public_key_openssh = pub_path.read_text().strip()
+
+    # 2. Hetzner server
+    console.print("[2/4] Provisioning Hetzner server...")
+    outputs = hetzner.provision(cfg, public_key_openssh, work_dir / "state.json")
+    ipv4: str = outputs["ipv4"]
+    ipv6: str = outputs["ipv6"]
+    console.print(f"    Server IPv4: [green]{ipv4}[/green]")
+
+    # 3. Cloudflare DNS
+    console.print("[3/4] Creating Cloudflare DNS records...")
+    dkim_priv, dkim_pub_path = save_keypair(keys_dir, name="dkim")
+    dkim_pub_b64 = dkim_public_key_base64(_openssh_pub_to_pem(dkim_pub_path))
+    dns = CloudflareDNS(cfg.cloudflare_token, cfg.cloudflare_zone_id, cfg.domain, cfg.cloudflare_email)
+    dns.provision(ipv4, ipv6, dkim_pub_b64)
+
+    # 4. Configure mail software
+    console.print("[4/4] Installing and configuring Postfix + Dovecot...")
+    setup = MailServerSetup(cfg, host=ipv4, private_key_path=str(priv_path))
+    setup.connect()
+    setup.run()
+
+    # 5. Restore from backup if one exists
+    backup_path = work_dir / "backup.json"
+    if backup_path.exists():
+        console.print("[5/5] Restoring users and mail from backup...")
+        bk = json.loads(backup_path.read_text())
+        local_mail_hint = bk.pop("local_mail_hint", None)
+        local_mail_dir = Path(local_mail_hint) if local_mail_hint else None
+        setup.restore(bk, local_mail_dir)
+        backup_path.unlink()
+        console.print("    [green]Backup restored and removed.[/green]")
+
+    console.print(Panel(
+        f"[bold green]Done![/bold green]\n\n"
+        f"SMTP: mail.{cfg.domain}:587 (STARTTLS)\n"
+        f"IMAP: mail.{cfg.domain}:993 (SSL)\n\n"
+        f"SSH key: {priv_path}\n"
+        f"DKIM private key: {dkim_priv}",
+        title="Mail server ready",
+    ))
+
+
+@app.command()
+def backup(
+    hetzner_token: str = typer.Option(..., envvar="IGN8_HETZNER_TOKEN", help="Hetzner Cloud API token"),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+) -> None:
+    """Snapshot server state (users, config) to backup.json without touching the server."""
+    backup_path = work_dir / "backup.json"
+    _save_backup(work_dir, hetzner_token, backup_path)
+
+
+@app.command()
+def destroy(
+    hetzner_token: str = typer.Option(..., envvar="IGN8_HETZNER_TOKEN", help="Hetzner Cloud API token"),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+) -> None:
+    """Tear down the Hetzner server, saving a backup first (DNS records are left intact)."""
+    state_path = work_dir / "state.json"
+    if not state_path.exists():
+        console.print("[yellow]No state file found — nothing to destroy.[/yellow]")
+        raise typer.Exit()
+
+    backup_path = work_dir / "backup.json"
+    _save_backup(work_dir, hetzner_token, backup_path)
+
+    hetzner.destroy(state_path, hetzner_token)
+    console.print("[green]Stack destroyed.[/green]")
+
+
+# ---------------------------------------------------------------------------
+
+@app.command()
+def configure_thunderbird(
+    username: str = typer.Argument(..., help="Email address or local username (e.g. alice or alice@example.com)"),
+    domain: str = typer.Option("", envvar="IGN8_DOMAIN", help="Mail domain — required when username has no @"),
+    display_name: str = typer.Option("", help="Display name shown in Thunderbird"),
+    profile: Path = typer.Option(None, help="Path to Thunderbird profile directory (auto-detected if omitted)"),
+) -> None:
+    """Add an IMAP/SMTP account to your local Thunderbird profile."""
+
+    if "@" in username:
+        email = username
+        mail_host = "mail." + email.split("@", 1)[1]
+    else:
+        if not domain:
+            console.print("[red]Error:[/red] provide --domain or set IGN8_DOMAIN when username has no @.")
+            raise typer.Exit(1)
+        email = f"{username}@{domain}"
+        mail_host = f"mail.{domain}"
+
+    name = display_name or email.split("@")[0]
+
+    if profile is None:
+        profile = thunderbird.find_profile()
+        if profile is None:
+            console.print(
+                "[red]Error:[/red] Thunderbird profile not found. "
+                "Pass --profile /path/to/profile explicitly."
+            )
+            raise typer.Exit(1)
+
+    console.print(f"Using profile: [cyan]{profile}[/cyan]")
+    console.print("[yellow]Close Thunderbird before continuing.[/yellow]")
+
+    thunderbird.configure_account(profile, email, name, mail_host)
+
+    console.print(Panel(
+        f"Account: [bold]{email}[/bold]\n"
+        f"IMAP:    {mail_host}:993  (SSL/TLS)\n"
+        f"SMTP:    {mail_host}:587  (STARTTLS)\n\n"
+        "Open Thunderbird — the account will appear automatically.",
+        title="Thunderbird configured",
+    ))
+
+
+@app.command()
+def switch_inbox(
+    account: str = typer.Argument(..., help="Email address or local username (e.g. alice or alice@example.com)"),
+    domain: str = typer.Option("", envvar="IGN8_DOMAIN", help="Mail domain — required when account has no @"),
+    password: str = typer.Option("", envvar="IGN8_MAIL_PASSWORD", help="IMAP/SMTP password (prompted if account is new)"),
+    mail_dir: Path = typer.Option(None, help="Local mail root (default: ~/Mail)"),
+    mbsyncrc: Path = typer.Option(None, help="mbsync config path (default: ~/.mbsyncrc)"),
+    msmtprc: Path = typer.Option(None, help="msmtp config path (default: ~/.msmtprc)"),
+    neomuttrc: Path = typer.Option(None, help="neomutt config path (default: ~/.config/neomutt/neomuttrc)"),
+    imap_host: str = typer.Option("", help="IMAP hostname (default: mail.<domain>)"),
+    smtp_host: str = typer.Option("", help="SMTP hostname (default: mail.<domain>)"),
+    sync: bool = typer.Option(True, "--sync/--no-sync", help="Run mbsync after switching"),
+) -> None:
+    """Switch mbsync and neomutt to point to a different mailbox."""
+
+    if "@" in account:
+        email = account
+        username = account.split("@")[0]
+        if not domain:
+            domain = account.split("@")[1]
+    else:
+        if not domain:
+            console.print("[red]Error:[/red] provide --domain or IGN8_DOMAIN when account has no @.")
+            raise typer.Exit(1)
+        username = account
+        email = f"{username}@{domain}"
+
+    home = Path.home()
+    mbsyncrc = mbsyncrc or home / ".mbsyncrc"
+    msmtprc = msmtprc or home / ".msmtprc"
+    neomuttrc = neomuttrc or home / ".config" / "neomutt" / "neomuttrc"
+    mail_dir = mail_dir or home / "Mail"
+    imap_host = imap_host or f"mail.{domain}"
+    smtp_host = smtp_host or f"mail.{domain}"
+    user_maildir = mail_dir / username
+
+    mbsync_profile = mbsyncrc.parent / f".mbsync.{username}"
+    needs_password = not mbsync_profile.exists() or not _msmtp_has_account(msmtprc, username)
+    if needs_password and not password:
+        if _vault.exists():
+            password = vault.get_mailbox_password(username, _vault)
+        else:
+            password = typer.prompt(f"Password for {email}", hide_input=True)
+
+    user_maildir.mkdir(parents=True, exist_ok=True)
+
+    if not mbsync_profile.exists():
+        console.print(f"Writing mbsync profile [cyan]{mbsync_profile}[/cyan]...")
+        _mbsync_write_profile(mbsync_profile, username, password, imap_host, user_maildir)
+    else:
+        console.print(f"mbsync: profile for [cyan]{username}[/cyan] already exists")
+    _mbsync_switch_symlink(mbsyncrc, username)
+    console.print(f"mbsync: [dim]{mbsyncrc}[/dim] → [cyan].mbsync.{username}[/cyan]")
+
+    if not _msmtp_has_account(msmtprc, username):
+        console.print(f"Adding [cyan]{username}[/cyan] to {msmtprc}...")
+        _msmtp_add_account(msmtprc, username, email, password, smtp_host)
+    _msmtp_set_default(msmtprc, username)
+    console.print(f"msmtp: default → [cyan]{username}[/cyan]")
+
+    console.print(f"neomutt: switching to [cyan]{email}[/cyan]...")
+    _neomutt_switch(neomuttrc, username, email, user_maildir)
+
+    if sync:
+        if shutil.which("mbsync"):
+            console.print(f"Syncing [dim]mbsync {username}[/dim]...")
+            subprocess.run(["mbsync", username], check=False)
+        else:
+            console.print("[yellow]mbsync not in PATH — skipping sync[/yellow]")
+
+    console.print(Panel(
+        f"Account:  [bold]{email}[/bold]\n"
+        f"Maildir:  {user_maildir}\n"
+        f"IMAP:     {imap_host}:993\n"
+        f"SMTP:     {smtp_host}:587",
+        title="[bold green]Inbox switched[/bold green]",
+    ))
+
+
+@app.command()
+def adduser(
+    username: str = typer.Argument(..., help="Linux username (local part of the email address)"),
+    domain: str = typer.Option("", envvar="IGN8_DOMAIN", help="Mail domain — used for display only"),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+) -> None:
+    """Create a mail user on the running server."""
+    state_path = work_dir / "state.json"
+    if not state_path.exists():
+        console.print("[red]Error:[/red] No state file found — run `ign8mail up` first.")
+        raise typer.Exit(1)
+
+    state = json.loads(state_path.read_text())
+    ipv4 = state.get("ipv4", "")
+    priv_key = work_dir / "keys" / "ign8mail"
+
+    if not ipv4:
+        console.print("[red]Error:[/red] No server IP in state file.")
+        raise typer.Exit(1)
+    if not priv_key.exists():
+        console.print(f"[red]Error:[/red] SSH key not found at {priv_key}.")
+        raise typer.Exit(1)
+
+    password = vault.get_mailbox_password(username, _vault)
+
+    cfg = Config(
+        domain="placeholder",
+        admin_email="placeholder@placeholder.com",  # type: ignore[arg-type]
+        hetzner_token="placeholder",
+        cloudflare_token="placeholder",
+        cloudflare_zone_id="placeholder",
+    )
+    setup = MailServerSetup(cfg, host=ipv4, private_key_path=str(priv_key))
+    setup.connect(retries=3, delay=5)
+    try:
+        setup.add_user(username, password)
+    finally:
+        setup.disconnect()
+
+    email = f"{username}@{domain}" if domain else username
+    console.print(f"[green]User [bold]{email}[/bold] created.[/green]")
+
+
+@app.command()
+def create_mailbox(
+    mailboxname: str = typer.Argument(..., help="Mailbox name / local part of the email address (e.g. alice)"),
+    domain: str = typer.Option("", envvar="IGN8_DOMAIN", help="Mail domain — used for display only"),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+) -> None:
+    """Create a mailbox on the running server."""
+    state_path = work_dir / "state.json"
+    if not state_path.exists():
+        console.print("[red]Error:[/red] No state file found — run `ign8mail up` first.")
+        raise typer.Exit(1)
+
+    state = json.loads(state_path.read_text())
+    ipv4 = state.get("ipv4", "")
+    priv_key = work_dir / "keys" / "ign8mail"
+
+    if not ipv4:
+        console.print("[red]Error:[/red] No server IP in state file.")
+        raise typer.Exit(1)
+    if not priv_key.exists():
+        console.print(f"[red]Error:[/red] SSH key not found at {priv_key}.")
+        raise typer.Exit(1)
+
+    password = vault.get_mailbox_password(mailboxname, _vault)
+
+    cfg = Config(
+        domain="placeholder",
+        admin_email="placeholder@placeholder.com",  # type: ignore[arg-type]
+        hetzner_token="placeholder",
+        cloudflare_token="placeholder",
+        cloudflare_zone_id="placeholder",
+    )
+    setup = MailServerSetup(cfg, host=ipv4, private_key_path=str(priv_key))
+    setup.connect(retries=3, delay=5)
+    try:
+        setup.add_user(mailboxname, password)
+    finally:
+        setup.disconnect()
+
+    email = f"{mailboxname}@{domain}" if domain else mailboxname
+    console.print(f"[green]Mailbox [bold]{email}[/bold] created.[/green]")
+
+
+@app.command(name="list")
+def list_inboxes(
+    domain: str = typer.Option("", envvar="IGN8_DOMAIN", help="Mail domain — used for display"),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+) -> None:
+    """List known mail inboxes on the running server."""
+    state_path = work_dir / "state.json"
+    if not state_path.exists():
+        console.print("[red]Error:[/red] No state file found — run `ign8mail up` first.")
+        raise typer.Exit(1)
+
+    state = json.loads(state_path.read_text())
+    ipv4 = state.get("ipv4", "")
+    priv_key = work_dir / "keys" / "ign8mail"
+
+    if not ipv4:
+        console.print("[red]Error:[/red] No server IP in state file.")
+        raise typer.Exit(1)
+    if not priv_key.exists():
+        console.print(f"[red]Error:[/red] SSH key not found at {priv_key}.")
+        raise typer.Exit(1)
+
+    cfg = Config(
+        domain="placeholder",
+        admin_email="placeholder@placeholder.com",  # type: ignore[arg-type]
+        hetzner_token="placeholder",
+        cloudflare_token="placeholder",
+        cloudflare_zone_id="placeholder",
+    )
+    setup = MailServerSetup(cfg, host=ipv4, private_key_path=str(priv_key))
+    setup.connect(retries=3, delay=5)
+    try:
+        users = setup.list_users()
+    finally:
+        setup.disconnect()
+
+    if not users:
+        console.print("[yellow]No mail accounts found.[/yellow]")
+        return
+
+    table = Table(title="Mail inboxes", show_lines=False)
+    table.add_column("Username", style="cyan")
+    table.add_column("Email" if domain else "Account")
+    table.add_column("Maildir", justify="center")
+
+    for u in users:
+        email = f"{u['username']}@{domain}" if domain else u["username"]
+        maildir_str = "[green]yes[/green]" if u["has_maildir"] else "[yellow]no[/yellow]"
+        table.add_row(u["username"], email, maildir_str)
+
+    console.print(table)
+
+
+@app.command()
+def passwd_recycle(
+    domain: str = typer.Option(..., envvar="IGN8_DOMAIN", help="Mail domain"),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+    mail_dir: Path = typer.Option(None, help="Local mail root (default: ~/Mail)"),
+    mbsyncrc: Path = typer.Option(None, help="mbsync symlink path (default: ~/.mbsyncrc)"),
+    msmtprc: Path = typer.Option(None, help="msmtp config path (default: ~/.msmtprc)"),
+    imap_host: str = typer.Option("", help="IMAP hostname (default: mail.<domain>)"),
+) -> None:
+    """Reset all mail account passwords and write per-mailbox ~/.mbsync.<user> profiles."""
+    state_path = work_dir / "state.json"
+    if not state_path.exists():
+        console.print("[red]Error:[/red] No state file found — run `ign8mail up` first.")
+        raise typer.Exit(1)
+
+    state = json.loads(state_path.read_text())
+    ipv4 = state.get("ipv4", "")
+    priv_key = work_dir / "keys" / "ign8mail"
+
+    if not ipv4:
+        console.print("[red]Error:[/red] No server IP in state file.")
+        raise typer.Exit(1)
+    if not priv_key.exists():
+        console.print(f"[red]Error:[/red] SSH key not found at {priv_key}.")
+        raise typer.Exit(1)
+
+    home = Path.home()
+    mbsyncrc = mbsyncrc or home / ".mbsyncrc"
+    msmtprc = msmtprc or home / ".msmtprc"
+    mail_dir = mail_dir or home / "Mail"
+    imap_host = imap_host or f"mail.{domain}"
+
+    cfg = Config(
+        domain="placeholder",
+        admin_email="placeholder@placeholder.com",  # type: ignore[arg-type]
+        hetzner_token="placeholder",
+        cloudflare_token="placeholder",
+        cloudflare_zone_id="placeholder",
+    )
+    setup = MailServerSetup(cfg, host=ipv4, private_key_path=str(priv_key))
+    setup.connect(retries=3, delay=5)
+    try:
+        users = setup.list_users()
+        if not users:
+            console.print("[yellow]No mail accounts found.[/yellow]")
+            return
+        new_passwords: dict[str, str] = {u["username"]: secrets.token_hex(12) for u in users}
+        for username, password in new_passwords.items():
+            setup.reset_password(username, password)
+            console.print(f"    Reset [cyan]{username}[/cyan]")
+    finally:
+        setup.disconnect()
+
+    if _vault.exists():
+        vault_data = vault.load(_vault)
+        vault_data.setdefault("mailbox_passwords", {})
+        vault_data["mailbox_passwords"].update(new_passwords)
+        vault.save(vault_data, _vault)
+        console.print(f"[dim]New passwords saved to vault {_vault}[/dim]")
+
+    table = Table(title="New credentials", show_lines=False)
+    table.add_column("Username", style="cyan")
+    table.add_column("Email")
+    table.add_column("Password", style="yellow")
+    table.add_column("Profile")
+
+    for username, password in new_passwords.items():
+        email = f"{username}@{domain}"
+        user_maildir = mail_dir / username
+        user_maildir.mkdir(parents=True, exist_ok=True)
+        profile = mbsyncrc.parent / f".mbsync.{username}"
+        _mbsync_write_profile(profile, username, password, imap_host, user_maildir)
+        if _msmtp_has_account(msmtprc, username):
+            _msmtp_update_password(msmtprc, username, password)
+        table.add_row(username, email, password, str(profile))
+
+    console.print(table)
+    console.print(f"\n[dim]Run [bold]ign8mail switch-inbox <user>[/bold] to activate a mailbox.[/dim]")
+
+
+@app.command()
+def tail_postfix_log(
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+    follow: bool = typer.Option(True, "--follow/--no-follow", "-f", help="Stream new lines as they arrive"),
+    log: str = typer.Option("/var/log/mail.log", help="Log file path on the server"),
+) -> None:
+    """Stream the Postfix log from the running server (Ctrl+C to stop)."""
+    state_path = work_dir / "state.json"
+    if not state_path.exists():
+        console.print("[red]Error:[/red] No state file found — run `ign8mail up` first.")
+        raise typer.Exit(1)
+
+    state = json.loads(state_path.read_text())
+    ipv4 = state.get("ipv4", "")
+    priv_key = work_dir / "keys" / "ign8mail"
+
+    if not ipv4:
+        console.print("[red]Error:[/red] No server IP in state file.")
+        raise typer.Exit(1)
+    if not priv_key.exists():
+        console.print(f"[red]Error:[/red] SSH key not found at {priv_key}.")
+        raise typer.Exit(1)
+
+    cfg = Config(
+        domain="placeholder",
+        admin_email="placeholder@placeholder.com",  # type: ignore[arg-type]
+        hetzner_token="placeholder",
+        cloudflare_token="placeholder",
+        cloudflare_zone_id="placeholder",
+    )
+    setup = MailServerSetup(cfg, host=ipv4, private_key_path=str(priv_key))
+    setup.connect(retries=3, delay=5)
+    console.print(f"[dim]Streaming {log} — Ctrl+C to stop[/dim]")
+    try:
+        setup.tail_log(log, follow=follow)
+    finally:
+        setup.disconnect()
+
+
+@app.command()
+def status(
+    hetzner_token: str = typer.Option("", envvar="IGN8_HETZNER_TOKEN", help="Hetzner Cloud API token (enables live server check)"),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+    check_services: bool = typer.Option(False, "--check-services", help="SSH into the server and check mail service health"),
+    check_mail: bool = typer.Option(False, "--check-mail", help="Send a test email and verify delivery via IMAP"),
+    mail_user: str = typer.Option("", "--mail-user", help="Username (local part) for --check-mail"),
+    mail_password: str = typer.Option("", "--mail-password", envvar="IGN8_MAIL_PASSWORD", help="Password for --check-mail (prompted if omitted)"),
+    domain: str = typer.Option("", envvar="IGN8_DOMAIN", help="Mail domain — required for --check-mail"),
+    format: _Format = typer.Option(_Format.pretty, help="Output format: pretty or json"),
+) -> None:
+    """Show the current state of the provisioned mail server."""
+    state_path = work_dir / "state.json"
+    priv_key = work_dir / "keys" / "ign8mail"
+
+    info: dict = {
+        "provisioned": state_path.exists(),
+        "keys_present": priv_key.exists(),
+        "ipv4": None,
+        "ipv6": None,
+        "server_id": None,
+        "server_status": None,
+        "services": None,
+        "mail_test": None,
+    }
+
+    if state_path.exists():
+        state = json.loads(state_path.read_text())
+        info["ipv4"] = state.get("ipv4")
+        info["ipv6"] = state.get("ipv6")
+        info["server_id"] = state.get("server_id")
+
+    if hetzner_token and info["server_id"]:
+        try:
+            from hcloud import Client
+            client = Client(token=hetzner_token)
+            server = client.servers.get_by_id(info["server_id"])
+            info["server_status"] = server.status if server else "not_found"
+        except Exception as exc:
+            info["server_status"] = f"error: {exc}"
+
+    if check_services and info["ipv4"] and priv_key.exists():
+        cfg = Config(
+            domain="placeholder",
+            admin_email="placeholder@placeholder.com",  # type: ignore[arg-type]
+            hetzner_token="placeholder",
+            cloudflare_token="placeholder",
+            cloudflare_zone_id="placeholder",
+        )
+        setup = MailServerSetup(cfg, host=info["ipv4"], private_key_path=str(priv_key))
+        try:
+            setup.connect(retries=2, delay=3)
+            services: dict[str, str] = {}
+            for svc in ("postfix", "dovecot", "rspamd"):
+                try:
+                    out = setup._exec(f"systemctl is-active {svc}").strip()
+                    services[svc] = out
+                except Exception:
+                    services[svc] = "inactive"
+            setup.disconnect()
+            info["services"] = services
+        except Exception as exc:
+            info["services"] = {"error": str(exc)}
+
+    if check_mail:
+        if not domain:
+            console.print("[red]Error:[/red] --domain / IGN8_DOMAIN is required for --check-mail.")
+            raise typer.Exit(1)
+        if not mail_user:
+            console.print("[red]Error:[/red] --mail-user is required for --check-mail.")
+            raise typer.Exit(1)
+        if not mail_password:
+            if _vault.exists():
+                mail_password = vault.get_mailbox_password(mail_user, _vault)
+            else:
+                mail_password = typer.prompt("Mail password", hide_input=True)
+        info["mail_test"] = _check_mail(f"mail.{domain}", mail_user, mail_password, domain)
+
+    if format == _Format.json:
+        console.print_json(json.dumps(info))
+    else:
+        _print_status_pretty(info)
+
+
+@app.command()
+def vault_init(
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory for the vault file"),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing vault"),
+) -> None:
+    """Create .ign8mail/vault.yml from current IGN8_* environment variables.
+
+    Set IGN8MAIL_TOKEN before running — that becomes the vault encryption password.
+    """
+    vault_path = work_dir / "vault.yml"
+    if vault_path.exists() and not force:
+        console.print(
+            f"[yellow]Vault already exists at {vault_path}.[/yellow]  "
+            "Use [bold]--force[/bold] to overwrite."
+        )
+        raise typer.Exit()
+
+    _ENV_KEYS = [
+        "IGN8_HETZNER_TOKEN",
+        "IGN8_CLOUDFLARE_TOKEN",
+        "IGN8_CLOUDFLARE_ZONE_ID",
+        "IGN8_CLOUDFLARE_EMAIL",
+    ]
+    data: dict = {k: os.environ.get(k, "") for k in _ENV_KEYS}
+    data.setdefault("mailbox_passwords", {})
+
+    work_dir.mkdir(parents=True, exist_ok=True)
+    vault.save(data, vault_path)
+    vault_path.chmod(0o600)
+
+    filled = [k for k in _ENV_KEYS if data[k]]
+    empty = [k for k in _ENV_KEYS if not data[k]]
+
+    console.print(Panel(
+        "\n".join(
+            ([f"[green]stored:[/green]  " + ", ".join(filled)] if filled else [])
+            + ([f"[yellow]missing:[/yellow] " + ", ".join(empty)] if empty else [])
+            + ["", f"Edit with:  [bold]ansible-vault edit {vault_path}[/bold]"]
+        ),
+        title=f"[bold green]Vault created:[/bold green] {vault_path}",
+    ))
+
+
+def _check_mail(host: str, username: str, password: str, domain: str) -> dict:
+    """Send a probe email via SMTP and verify delivery via IMAP. Returns a result dict."""
+    import imaplib
+    import smtplib
+    import ssl
+    import time
+    import uuid
+    from email.message import EmailMessage
+
+    marker = f"ign8mail-test-{uuid.uuid4().hex[:8]}"
+    address = f"{username}@{domain}"
+    result: dict = {"send_ok": False, "receive_ok": False, "latency_s": None, "error": None}
+
+    try:
+        msg = EmailMessage()
+        msg["From"] = address
+        msg["To"] = address
+        msg["Subject"] = f"ign8mail delivery test {marker}"
+        msg.set_content("Automated delivery probe — safe to delete.")
+
+        ctx = ssl.create_default_context()
+        with smtplib.SMTP(host, 587, timeout=15) as smtp:
+            smtp.ehlo()
+            smtp.starttls(context=ctx)
+            smtp.login(username, password)
+            smtp.send_message(msg)
+        result["send_ok"] = True
+    except Exception as exc:
+        result["error"] = f"SMTP: {exc}"
+        return result
+
+    # Poll IMAP until the message appears (up to ~20 s).
+    sent_at = time.monotonic()
+    try:
+        ctx = ssl.create_default_context()
+        with imaplib.IMAP4_SSL(host, 993, ssl_context=ctx) as imap:
+            imap.login(username, password)
+            imap.select("INBOX")
+            for _ in range(7):
+                _, data = imap.search(None, "SUBJECT", f'"ign8mail delivery test {marker}"')
+                ids = data[0].split()
+                if ids:
+                    result["latency_s"] = round(time.monotonic() - sent_at, 1)
+                    result["receive_ok"] = True
+                    imap.store(ids[-1], "+FLAGS", "\\Deleted")
+                    imap.expunge()
+                    break
+                time.sleep(3)
+        if not result["receive_ok"]:
+            result["error"] = "IMAP: test message not found after 20 s"
+    except Exception as exc:
+        result["error"] = f"IMAP: {exc}"
+
+    return result
+
+
+def _print_status_pretty(info: dict) -> None:
+    provisioned = info["provisioned"]
+    state_str = "[green]provisioned[/green]" if provisioned else "[yellow]not provisioned[/yellow]"
+
+    table = Table(show_header=False, box=None, padding=(0, 1))
+    table.add_column("key", style="bold")
+    table.add_column("value")
+
+    table.add_row("State", state_str)
+    table.add_row("Keys", "[green]present[/green]" if info["keys_present"] else "[yellow]missing[/yellow]")
+
+    if info["ipv4"]:
+        table.add_row("IPv4", info["ipv4"])
+    if info["ipv6"]:
+        table.add_row("IPv6", info["ipv6"])
+    if info["server_id"]:
+        table.add_row("Server ID", str(info["server_id"]))
+
+    server_status = info.get("server_status")
+    if server_status is not None:
+        color = "green" if server_status == "running" else "red"
+        table.add_row("Hetzner status", f"[{color}]{server_status}[/{color}]")
+
+    services = info.get("services")
+    if services:
+        for svc, state in services.items():
+            if svc == "error":
+                table.add_row("Services", f"[red]SSH error: {state}[/red]")
+            else:
+                color = "green" if state == "active" else "red"
+                table.add_row(f"  {svc}", f"[{color}]{state}[/{color}]")
+
+    mail_test = info.get("mail_test")
+    if mail_test:
+        send_ok = mail_test.get("send_ok")
+        recv_ok = mail_test.get("receive_ok")
+        latency = mail_test.get("latency_s")
+        error = mail_test.get("error")
+        send_str = "[green]ok[/green]" if send_ok else "[red]failed[/red]"
+        if recv_ok:
+            recv_str = f"[green]ok[/green] ({latency}s)"
+        else:
+            recv_str = "[red]failed[/red]"
+        table.add_row("Mail send", send_str)
+        table.add_row("Mail receive", recv_str)
+        if error:
+            table.add_row("  error", f"[red]{error}[/red]")
+
+    console.print(Panel(table, title="[bold]ign8mail status[/bold]"))
+
+
+def _save_backup(work_dir: Path, hetzner_token: str, backup_path: Path) -> None:
+    """SSH into the running server and write backup.json. Warns but does not raise on failure."""
+    state_path = work_dir / "state.json"
+    if not state_path.exists():
+        console.print("[yellow]No state file — cannot create backup.[/yellow]")
+        return
+
+    state = json.loads(state_path.read_text())
+    ipv4 = state.get("ipv4", "")
+    priv_key = work_dir / "keys" / "ign8mail"
+
+    if not (ipv4 and priv_key.exists()):
+        console.print("[yellow]Cannot SSH for backup (no IP or key found).[/yellow]")
+        return
+
+    console.print("Backing up server data...")
+    try:
+        cfg = Config(
+            domain="placeholder",
+            admin_email="placeholder@placeholder.com",  # type: ignore[arg-type]
+            hetzner_token=hetzner_token,
+            cloudflare_token="placeholder",
+            cloudflare_zone_id="placeholder",
+        )
+        setup = MailServerSetup(cfg, host=ipv4, private_key_path=str(priv_key))
+        setup.connect(retries=3, delay=5)
+        bk = setup.backup()
+        setup.disconnect()
+
+        users = bk.get("users", [])
+        if users:
+            first_user = users[0]["username"]
+            bk["local_mail_hint"] = str(Path.home() / "Mail" / first_user)
+
+        backup_path.write_text(json.dumps(bk, indent=2))
+        console.print(f"    Backup saved to [cyan]{backup_path}[/cyan]")
+    except Exception as exc:
+        console.print(f"    [yellow]Warning: backup failed ({exc}).[/yellow]")
+
+
+@app.command()
+def ssh(
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+    user: str = typer.Option("root", help="Remote user to connect as"),
+) -> None:
+    """Open an interactive SSH session to the provisioned server."""
+    state_path = work_dir / "state.json"
+    if not state_path.exists():
+        console.print("[red]Error:[/red] No state file found — run `ign8mail up` first.")
+        raise typer.Exit(1)
+
+    state = json.loads(state_path.read_text())
+    ipv4 = state.get("ipv4", "")
+    priv_key = work_dir / "keys" / "ign8mail"
+
+    if not ipv4:
+        console.print("[red]Error:[/red] No server IP in state file.")
+        raise typer.Exit(1)
+    if not priv_key.exists():
+        console.print(f"[red]Error:[/red] SSH key not found at {priv_key}.")
+        raise typer.Exit(1)
+
+    os.execvp("ssh", ["ssh", "-i", str(priv_key), "-o", "StrictHostKeyChecking=accept-new", f"{user}@{ipv4}"])
+
+
+def _mbsync_write_profile(path: Path, username: str, password: str, imap_host: str, maildir: Path) -> None:
+    content = (
+        f"IMAPAccount {username}\n"
+        f"Host {imap_host}\n"
+        f"Port 993\n"
+        f"User {username}\n"
+        f"Pass {password}\n"
+        f"TLSType IMAPS\n"
+        f"\n"
+        f"IMAPStore {username}-remote\n"
+        f"Account {username}\n"
+        f"\n"
+        f"MaildirStore {username}-local\n"
+        f"SubFolders Verbatim\n"
+        f"Path {maildir}/\n"
+        f"Inbox {maildir}/Inbox\n"
+        f"\n"
+        f"Channel {username}\n"
+        f"Far :{username}-remote:\n"
+        f"Near :{username}-local:\n"
+        f"Patterns *\n"
+        f"Create Near\n"
+        f"Expunge Near\n"
+        f"SyncState *\n"
+    )
+    path.write_text(content)
+    path.chmod(0o600)
+
+
+def _mbsync_switch_symlink(mbsyncrc: Path, username: str) -> None:
+    profile = mbsyncrc.parent / f".mbsync.{username}"
+    if mbsyncrc.is_symlink() or mbsyncrc.exists():
+        mbsyncrc.unlink()
+    mbsyncrc.symlink_to(profile.name)
+
+
+def _msmtp_update_password(path: Path, username: str, password: str) -> None:
+    if not path.exists():
+        return
+    in_account = False
+    lines = path.read_text().splitlines(keepends=True)
+    result = []
+    for line in lines:
+        if re.match(rf"^account\s+{re.escape(username)}\s*$", line):
+            in_account = True
+        elif re.match(r"^account\s+", line):
+            in_account = False
+        if in_account and re.match(r"^password\s+", line):
+            line = f"password       {password}\n"
+        result.append(line)
+    path.write_text("".join(result))
+
+
+def _mbsync_has_account(path: Path, username: str) -> bool:
+    pattern = rf"^IMAPAccount {re.escape(username)}\s*$"
+    return path.exists() and bool(re.search(pattern, path.read_text(), re.MULTILINE))
+
+
+def _mbsync_add_account(
+    path: Path, username: str, password: str, imap_host: str, maildir: Path
+) -> None:
+    block = (
+        f"\nIMAPAccount {username}\n"
+        f"Host {imap_host}\n"
+        f"Port 993\n"
+        f"User {username}\n"
+        f"Pass {password}\n"
+        f"TLSType IMAPS\n"
+        f"\n"
+        f"IMAPStore {username}-remote\n"
+        f"Account {username}\n"
+        f"\n"
+        f"MaildirStore {username}-local\n"
+        f"SubFolders Verbatim\n"
+        f"Path {maildir}/\n"
+        f"Inbox {maildir}/Inbox\n"
+        f"\n"
+        f"Channel {username}\n"
+        f"Far :{username}-remote:\n"
+        f"Near :{username}-local:\n"
+        f"Patterns *\n"
+        f"Create Near\n"
+        f"Expunge Near\n"
+        f"SyncState *\n"
+    )
+    with path.open("a") as f:
+        f.write(block)
+    path.chmod(0o600)
+
+
+def _msmtp_has_account(path: Path, username: str) -> bool:
+    pattern = rf"^account\s+{re.escape(username)}\s*$"
+    return path.exists() and bool(re.search(pattern, path.read_text(), re.MULTILINE))
+
+
+def _msmtp_add_account(
+    path: Path, username: str, email: str, password: str, smtp_host: str
+) -> None:
+    defaults = (
+        "defaults\n"
+        "auth           on\n"
+        "tls            on\n"
+        "tls_starttls   on\n"
+        "tls_trust_file /etc/ssl/cert.pem\n"
+        "logfile        ~/.msmtp.log\n"
+    )
+    block = (
+        f"\naccount        {username}\n"
+        f"host           {smtp_host}\n"
+        f"port           587\n"
+        f"from           {email}\n"
+        f"user           {username}\n"
+        f"password       {password}\n"
+    )
+    if not path.exists():
+        path.write_text(defaults + block)
+    else:
+        with path.open("a") as f:
+            f.write(block)
+    path.chmod(0o600)
+
+
+def _msmtp_set_default(path: Path, username: str) -> None:
+    if not path.exists():
+        return
+    text = path.read_text()
+    if re.search(r"^account default:", text, re.MULTILINE):
+        text = re.sub(
+            r"^account default:.*$", f"account default: {username}", text, flags=re.MULTILINE
+        )
+    else:
+        text = text.rstrip("\n") + f"\naccount default: {username}\n"
+    path.write_text(text)
+
+
+def _neomutt_switch(path: Path, username: str, email: str, maildir: Path) -> None:
+    def _set(text: str, key: str, value: str) -> str:
+        pattern = rf"^set {re.escape(key)}\s*=.*$"
+        repl = f'set {key:<12}= "{value}"'
+        result, n = re.subn(pattern, repl, text, flags=re.MULTILINE)
+        if n == 0:
+            result = result.rstrip("\n") + f'\nset {key:<12}= "{value}"\n'
+        return result
+
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            f'set realname  = "{username}"\n'
+            f'set from      = "{email}"\n'
+            f'set mbox_type = Maildir\n'
+            f'set folder    = "{maildir}"\n'
+            f'set spoolfile = "+Inbox"\n'
+            f'set record    = "+Sent"\n'
+            f'set postponed = "+Drafts"\n'
+            f'set trash     = "+Trash"\n'
+        )
+        return
+
+    text = path.read_text()
+    for key, value in (("realname", username), ("from", email), ("folder", str(maildir))):
+        text = _set(text, key, value)
+    path.write_text(text)
+
+
+def _openssh_pub_to_pem(pub_path: Path) -> str:
+    from cryptography.hazmat.primitives.serialization import load_ssh_public_key, Encoding, PublicFormat
+    pub = load_ssh_public_key(pub_path.read_bytes())
+    return pub.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode()
+
+
+def main() -> None:
+    app()

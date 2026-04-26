@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ign8mail"
+version = "0.1.0"
+description = "Spin up a fully configured mail server in minutes — Hetzner Cloud infra, Cloudflare DNS, all from one CLI command."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "typer>=0.12",
+    "rich>=13",
+    "hcloud>=2",
+    "cloudflare>=3",
+    "paramiko>=3",
+    "pydantic>=2",
+    "pydantic-settings>=2",
+    "cryptography>=42",
+    "jinja2>=3",
+    "ansible-vault>=2",
+]
+
+[project.scripts]
+ign8mail = "ign8mail.cli:app"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-mock>=3",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ign8mail"]
+
+[tool.ruff]
+src = ["src"]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+strict = true
+mypy_path = "src"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
