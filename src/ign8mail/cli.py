@@ -19,7 +19,7 @@ from ign8mail import vault
 from ign8mail.config import Config
 from ign8mail.dns.cloudflare import CloudflareDNS
 from ign8mail.infra import hetzner
-from ign8mail.keys import dkim_public_key_base64, save_keypair
+from ign8mail.keys import dkim_private_key_pem, dkim_public_key_base64, save_keypair
 from ign8mail.mailserver.setup import MailServerSetup
 from ign8mail import thunderbird
 
@@ -101,6 +101,7 @@ def up(
     setup = MailServerSetup(cfg, host=ipv4, private_key_path=str(priv_path))
     setup.connect()
     setup.run()
+    setup.configure_dkim_signing(cfg.domain, dkim_private_key_pem(dkim_priv))
     setup.enable_autocreate()
 
     # 5. Restore from backup if one exists
@@ -411,6 +412,50 @@ def delete_mailbox(
     console.print(f"[green]Mailbox [bold]{email}[/bold] deleted.[/green]")
     if purge:
         console.print("[dim]Home directory and mail data removed.[/dim]")
+
+
+@app.command()
+def configure_dkim(
+    domain: str = typer.Option(..., envvar="IGN8_DOMAIN", help="Mail domain"),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+) -> None:
+    """Upload the DKIM key and configure rspamd signing on the running server."""
+    state_path = work_dir / "state.json"
+    if not state_path.exists():
+        console.print("[red]Error:[/red] No state file found — run `ign8mail up` first.")
+        raise typer.Exit(1)
+
+    dkim_priv = work_dir / "keys" / "dkim"
+    if not dkim_priv.exists():
+        console.print(f"[red]Error:[/red] DKIM private key not found at {dkim_priv}.")
+        raise typer.Exit(1)
+
+    state = json.loads(state_path.read_text())
+    ipv4 = state.get("ipv4", "")
+    priv_key = work_dir / "keys" / "ign8mail"
+
+    if not ipv4:
+        console.print("[red]Error:[/red] No server IP in state file.")
+        raise typer.Exit(1)
+    if not priv_key.exists():
+        console.print(f"[red]Error:[/red] SSH key not found at {priv_key}.")
+        raise typer.Exit(1)
+
+    cfg = Config(
+        domain="placeholder",
+        admin_email="placeholder@placeholder.com",  # type: ignore[arg-type]
+        hetzner_token="placeholder",
+        cloudflare_token="placeholder",
+        cloudflare_zone_id="placeholder",
+    )
+    setup = MailServerSetup(cfg, host=ipv4, private_key_path=str(priv_key))
+    setup.connect(retries=3, delay=5)
+    try:
+        setup.configure_dkim_signing(domain, dkim_private_key_pem(dkim_priv))
+    finally:
+        setup.disconnect()
+
+    console.print(f"[green]DKIM signing configured for [bold]{domain}[/bold] (selector: mail).[/green]")
 
 
 @app.command()

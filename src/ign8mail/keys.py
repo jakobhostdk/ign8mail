@@ -34,6 +34,16 @@ def dkim_public_key_base64(public_key_pem: str) -> str:
     return base64.b64encode(der).decode()
 
 
+def dkim_private_key_pem(priv_path: Path) -> bytes:
+    """Read an OpenSSH private key and return it as a PEM RSA private key (for rspamd)."""
+    key = serialization.load_ssh_private_key(priv_path.read_bytes(), password=None)
+    return key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+
 def save_keypair(directory: Path, name: str = "ign8mail") -> tuple[Path, Path]:
     """Generate a keypair if it doesn't exist, return (private_path, public_path)."""
     directory.mkdir(parents=True, exist_ok=True)
