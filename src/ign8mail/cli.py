@@ -362,6 +362,56 @@ def create_mailbox(
     console.print(f"[green]Mailbox [bold]{email}[/bold] created.[/green]")
 
 
+@app.command()
+def delete_mailbox(
+    mailboxname: str = typer.Argument(..., help="Mailbox name / local part of the email address (e.g. alice)"),
+    domain: str = typer.Option("", envvar="IGN8_DOMAIN", help="Mail domain — used for display only"),
+    purge: bool = typer.Option(False, "--purge", help="Also delete the home directory and all mail data"),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+) -> None:
+    """Delete a mailbox from the running server."""
+    state_path = work_dir / "state.json"
+    if not state_path.exists():
+        console.print("[red]Error:[/red] No state file found — run `ign8mail up` first.")
+        raise typer.Exit(1)
+
+    state = json.loads(state_path.read_text())
+    ipv4 = state.get("ipv4", "")
+    priv_key = work_dir / "keys" / "ign8mail"
+
+    if not ipv4:
+        console.print("[red]Error:[/red] No server IP in state file.")
+        raise typer.Exit(1)
+    if not priv_key.exists():
+        console.print(f"[red]Error:[/red] SSH key not found at {priv_key}.")
+        raise typer.Exit(1)
+
+    email = f"{mailboxname}@{domain}" if domain else mailboxname
+    if purge:
+        typer.confirm(
+            f"Permanently delete mailbox {email} including all mail data?",
+            abort=True,
+        )
+
+    cfg = Config(
+        domain="placeholder",
+        admin_email="placeholder@placeholder.com",  # type: ignore[arg-type]
+        hetzner_token="placeholder",
+        cloudflare_token="placeholder",
+        cloudflare_zone_id="placeholder",
+    )
+    setup = MailServerSetup(cfg, host=ipv4, private_key_path=str(priv_key))
+    setup.connect(retries=3, delay=5)
+    try:
+        setup.delete_user(mailboxname, purge=purge)
+    finally:
+        setup.disconnect()
+
+    console.print(f"[green]Mailbox [bold]{email}[/bold] deleted.[/green]")
+    if purge:
+        console.print("[dim]Home directory and mail data removed.[/dim]")
+
+
 @app.command(name="list")
 def list_inboxes(
     domain: str = typer.Option("", envvar="IGN8_DOMAIN", help="Mail domain — used for display"),

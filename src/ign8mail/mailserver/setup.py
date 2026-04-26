@@ -205,6 +205,20 @@ class MailServerSetup:
             f"postmap /etc/postfix/local_recipients && systemctl reload postfix"
         )
 
+    def delete_user(self, username: str, *, purge: bool = False) -> None:
+        """Remove a mail user from the server.
+
+        Removes from postfix local_recipients and deletes the system user.
+        Pass purge=True to also wipe the home directory / Maildir.
+        """
+        assert self._ssh, "Call connect() first"
+        self._exec(
+            f"sed -i '/^{username} /d' /etc/postfix/local_recipients && "
+            f"postmap /etc/postfix/local_recipients && systemctl reload postfix"
+        )
+        userdel_flags = "-r" if purge else ""
+        self._exec(f"id {username} 2>/dev/null && userdel {userdel_flags} {username} || true")
+
     def _create_mailboxes(self, username: str) -> None:
         for folder in _STANDARD_MAILBOXES:
             self._exec(f"doveadm mailbox create -u {username} {folder} || true")
