@@ -1,12 +1,130 @@
 """SSH into the provisioned server and install/configure the mail stack."""
 
 import io
+import json
 import time
 from pathlib import Path
 
 import paramiko
 
 from ign8mail.config import Config
+
+_POLICY_DAEMON = '''\
+#!/usr/bin/env python3
+"""Postfix policy daemon: auto-creates mailboxes for unknown local recipients."""
+import json
+import os
+import secrets
+import socketserver
+import subprocess
+import threading
+import time
+
+SILENCED = "/etc/postfix/silenced_recipients"
+DOMAIN_FILE = "/etc/postfix/ign8mail_domain"
+LOG = "/var/log/ign8mail-autocreated.jsonl"
+LOCAL_RECIPIENTS = "/etc/postfix/local_recipients"
+_SUBDIRS = ("cur", "new", "tmp")
+_FOLDERS = (".Sent", ".Drafts", ".Trash", ".Junk")
+_lock = threading.Lock()
+
+
+def _local_domain():
+    if os.path.exists(DOMAIN_FILE):
+        return open(DOMAIN_FILE).read().strip()
+    r = subprocess.run(["postconf", "-h", "mydomain"], capture_output=True, text=True)
+    return r.stdout.strip()
+
+
+def _user_exists(username):
+    return subprocess.run(["id", username], capture_output=True).returncode == 0
+
+
+def _is_silenced(username):
+    if not os.path.exists(SILENCED):
+        return False
+    with open(SILENCED) as f:
+        return username in {line.strip() for line in f}
+
+
+def _create_user(username):
+    with _lock:
+        if _user_exists(username):
+            return
+        password = secrets.token_hex(12)
+        subprocess.run(["useradd", "-m", "-s", "/bin/bash", username], check=True)
+        proc = subprocess.Popen(["chpasswd"], stdin=subprocess.PIPE)
+        proc.communicate(f"{username}:{password}\\n".encode())
+        home = f"/home/{username}"
+        for sub in _SUBDIRS:
+            os.makedirs(f"{home}/Maildir/{sub}", exist_ok=True)
+        for folder in _FOLDERS:
+            for sub in _SUBDIRS:
+                os.makedirs(f"{home}/Maildir/{folder}/{sub}", exist_ok=True)
+        subprocess.run(["chown", "-R", f"{username}:{username}", f"{home}/Maildir"], check=True)
+        with open(LOCAL_RECIPIENTS, "a") as f:
+            f.write(f"{username} {username}\\n")
+        subprocess.run(["postmap", LOCAL_RECIPIENTS], check=True)
+        subprocess.run(
+            ["doveadm", "mailbox", "create", "-u", username, "Drafts", "Sent", "Trash", "Junk"],
+            capture_output=True,
+        )
+        with open(LOG, "a") as f:
+            json.dump({"username": username, "password": password, "ts": int(time.time())}, f)
+            f.write("\\n")
+
+
+class _PolicyHandler(socketserver.StreamRequestHandler):
+    def handle(self):
+        attrs = {}
+        for raw in self.rfile:
+            line = raw.decode().strip()
+            if not line:
+                self.wfile.write(f"action={self._decide(attrs)}\\n\\n".encode())
+                attrs = {}
+            elif "=" in line:
+                k, v = line.split("=", 1)
+                attrs[k] = v
+
+    def _decide(self, attrs):
+        recipient = attrs.get("recipient", "")
+        if not recipient or "@" not in recipient:
+            return "DUNNO"
+        local_part, domain_part = recipient.rsplit("@", 1)
+        if domain_part.lower() != _local_domain().lower():
+            return "DUNNO"
+        local = local_part.lower()
+        if _is_silenced(local):
+            return "REJECT User unknown"
+        if not _user_exists(local):
+            try:
+                _create_user(local)
+            except Exception as exc:
+                return f"DEFER_IF_PERMIT Service error: {exc}"
+        return "DUNNO"
+
+
+if __name__ == "__main__":
+    socketserver.TCPServer.allow_reuse_address = True
+    with socketserver.ThreadingTCPServer(("127.0.0.1", 10023), _PolicyHandler) as srv:
+        srv.serve_forever()
+'''
+
+_POLICY_SERVICE = """\
+[Unit]
+Description=ign8mail Postfix autocreate policy daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ign8mail-policy
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
+"""
 
 # Packages installed on the server
 PACKAGES = "postfix postfix-mysql dovecot-core dovecot-imapd dovecot-pop3d rspamd certbot redis-server"
@@ -204,6 +322,69 @@ class MailServerSetup:
             f"echo '{username} {username}' >> /etc/postfix/local_recipients && "
             f"postmap /etc/postfix/local_recipients && systemctl reload postfix"
         )
+
+    def enable_autocreate(self) -> None:
+        """Deploy the policy daemon and wire it into Postfix recipient checks."""
+        assert self._ssh, "Call connect() first"
+        sftp = self._ssh.open_sftp()
+        try:
+            sftp.putfo(io.BytesIO(_POLICY_DAEMON.encode()), "/usr/local/bin/ign8mail-policy")
+            sftp.putfo(
+                io.BytesIO(_POLICY_SERVICE.encode()),
+                "/etc/systemd/system/ign8mail-policy.service",
+            )
+        finally:
+            sftp.close()
+        self._exec("chmod +x /usr/local/bin/ign8mail-policy")
+        self._exec(
+            "systemctl daemon-reload && "
+            "systemctl enable ign8mail-policy && "
+            "systemctl restart ign8mail-policy"
+        )
+        self._exec("touch /etc/postfix/silenced_recipients")
+        # Write domain so the daemon can filter non-local recipients
+        self._exec("postconf -h mydomain > /etc/postfix/ign8mail_domain")
+        # policy service must run BEFORE permit_sasl_authenticated so it can
+        # create the mailbox before reject_unlisted_recipient checks for it
+        self._exec(
+            "postconf -e 'smtpd_recipient_restrictions = "
+            "permit_mynetworks, check_policy_service inet:127.0.0.1:10023, "
+            "permit_sasl_authenticated, reject_unauth_destination, reject_unlisted_recipient'"
+        )
+        self._exec("systemctl reload postfix")
+
+    def sync_autocreated(self) -> list[dict]:
+        """Read and clear the autocreated mailbox log from the server."""
+        assert self._ssh, "Call connect() first"
+        raw = self._exec("cat /var/log/ign8mail-autocreated.jsonl 2>/dev/null || true")
+        entries = []
+        for line in raw.strip().splitlines():
+            line = line.strip()
+            if line:
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+        if entries:
+            self._exec("truncate -s 0 /var/log/ign8mail-autocreated.jsonl")
+        return entries
+
+    def disable_user(self, username: str) -> None:
+        """Remove from local_recipients (bounce future mail) but keep the mailbox intact."""
+        assert self._ssh, "Call connect() first"
+        self._exec(
+            f"sed -i '/^{username} /d' /etc/postfix/local_recipients && "
+            f"postmap /etc/postfix/local_recipients && systemctl reload postfix"
+        )
+
+    def silence_user(self, username: str) -> None:
+        """Add to the silenced list and purge the mailbox entirely."""
+        assert self._ssh, "Call connect() first"
+        self._exec(
+            f"grep -qxF '{username}' /etc/postfix/silenced_recipients || "
+            f"echo '{username}' >> /etc/postfix/silenced_recipients"
+        )
+        self.delete_user(username, purge=True)
 
     def delete_user(self, username: str, *, purge: bool = False) -> None:
         """Remove a mail user from the server.

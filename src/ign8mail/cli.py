@@ -101,6 +101,7 @@ def up(
     setup = MailServerSetup(cfg, host=ipv4, private_key_path=str(priv_path))
     setup.connect()
     setup.run()
+    setup.enable_autocreate()
 
     # 5. Restore from backup if one exists
     backup_path = work_dir / "backup.json"
@@ -410,6 +411,237 @@ def delete_mailbox(
     console.print(f"[green]Mailbox [bold]{email}[/bold] deleted.[/green]")
     if purge:
         console.print("[dim]Home directory and mail data removed.[/dim]")
+
+
+@app.command()
+def enable_autocreate(
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+) -> None:
+    """Deploy the autocreate policy daemon on the running server."""
+    state_path = work_dir / "state.json"
+    if not state_path.exists():
+        console.print("[red]Error:[/red] No state file found — run `ign8mail up` first.")
+        raise typer.Exit(1)
+
+    state = json.loads(state_path.read_text())
+    ipv4 = state.get("ipv4", "")
+    priv_key = work_dir / "keys" / "ign8mail"
+
+    if not ipv4:
+        console.print("[red]Error:[/red] No server IP in state file.")
+        raise typer.Exit(1)
+    if not priv_key.exists():
+        console.print(f"[red]Error:[/red] SSH key not found at {priv_key}.")
+        raise typer.Exit(1)
+
+    cfg = Config(
+        domain="placeholder",
+        admin_email="placeholder@placeholder.com",  # type: ignore[arg-type]
+        hetzner_token="placeholder",
+        cloudflare_token="placeholder",
+        cloudflare_zone_id="placeholder",
+    )
+    setup = MailServerSetup(cfg, host=ipv4, private_key_path=str(priv_key))
+    setup.connect(retries=3, delay=5)
+    try:
+        setup.enable_autocreate()
+    finally:
+        setup.disconnect()
+
+    console.print("[green]Autocreate policy daemon deployed and Postfix updated.[/green]")
+
+
+# ---------------------------------------------------------------------------
+# autocreated subapp
+# ---------------------------------------------------------------------------
+
+_autocreated_app = typer.Typer(name="autocreated", help="Manage auto-created mailboxes.")
+app.add_typer(_autocreated_app)
+
+
+def _load_autocreated(vault_path: Path) -> dict[str, dict]:
+    if not vault_path.exists():
+        return {}
+    data = vault.load(vault_path)
+    return data.get("autocreated_mailboxes") or {}
+
+
+def _save_autocreated(entries: dict[str, dict], vault_path: Path) -> None:
+    data = vault.load(vault_path) if vault_path.exists() else {}
+    data["autocreated_mailboxes"] = entries
+    vault.save(data, vault_path)
+
+
+def _autocreated_setup(work_dir: Path) -> tuple[str, Path]:
+    """Return (ipv4, priv_key) or raise typer.Exit."""
+    state_path = work_dir / "state.json"
+    if not state_path.exists():
+        console.print("[red]Error:[/red] No state file found — run `ign8mail up` first.")
+        raise typer.Exit(1)
+    state = json.loads(state_path.read_text())
+    ipv4 = state.get("ipv4", "")
+    priv_key = work_dir / "keys" / "ign8mail"
+    if not ipv4:
+        console.print("[red]Error:[/red] No server IP in state file.")
+        raise typer.Exit(1)
+    if not priv_key.exists():
+        console.print(f"[red]Error:[/red] SSH key not found at {priv_key}.")
+        raise typer.Exit(1)
+    return ipv4, priv_key
+
+
+def _make_setup(ipv4: str, priv_key: Path) -> MailServerSetup:
+    cfg = Config(
+        domain="placeholder",
+        admin_email="placeholder@placeholder.com",  # type: ignore[arg-type]
+        hetzner_token="placeholder",
+        cloudflare_token="placeholder",
+        cloudflare_zone_id="placeholder",
+    )
+    return MailServerSetup(cfg, host=ipv4, private_key_path=str(priv_key))
+
+
+@_autocreated_app.command(name="list")
+def autocreated_list(
+    domain: str = typer.Option("", envvar="IGN8_DOMAIN", help="Mail domain — used for display"),
+) -> None:
+    """List auto-created mailboxes and their status."""
+    entries = _load_autocreated(_vault)
+    if not entries:
+        console.print("[yellow]No auto-created mailboxes recorded.[/yellow]")
+        return
+
+    _STATUS_COLOR = {
+        "pending": "yellow",
+        "enabled": "green",
+        "disabled": "dim",
+        "silenced": "red",
+    }
+    table = Table(title="Auto-created mailboxes", show_lines=False)
+    table.add_column("Username", style="cyan")
+    table.add_column("Email" if domain else "Account")
+    table.add_column("Status", justify="center")
+
+    for name, info in sorted(entries.items()):
+        status = info.get("status", "pending")
+        color = _STATUS_COLOR.get(status, "white")
+        email = f"{name}@{domain}" if domain else name
+        table.add_row(name, email, f"[{color}]{status}[/{color}]")
+
+    console.print(table)
+
+
+@_autocreated_app.command()
+def sync(
+    domain: str = typer.Option("", envvar="IGN8_DOMAIN", help="Mail domain — used for display"),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+) -> None:
+    """Pull new auto-created mailboxes from the server into the vault."""
+    ipv4, priv_key = _autocreated_setup(work_dir)
+    setup = _make_setup(ipv4, priv_key)
+    setup.connect(retries=3, delay=5)
+    try:
+        new_entries = setup.sync_autocreated()
+    finally:
+        setup.disconnect()
+
+    if not new_entries:
+        console.print("[yellow]No new auto-created mailboxes on server.[/yellow]")
+        return
+
+    entries = _load_autocreated(_vault)
+    vault_data = vault.load(_vault) if _vault.exists() else {}
+    vault_data.setdefault("mailbox_passwords", {})
+    for e in new_entries:
+        name = e["username"]
+        if name not in entries:
+            entries[name] = {"password": e["password"], "status": "pending", "ts": e.get("ts", 0)}
+        vault_data["mailbox_passwords"].setdefault(name, e["password"])
+    vault_data["autocreated_mailboxes"] = entries
+    vault.save(vault_data, _vault)
+
+    table = Table(title="Synced auto-created mailboxes", show_lines=False)
+    table.add_column("Username", style="cyan")
+    table.add_column("Email" if domain else "Account")
+    table.add_column("Status")
+
+    for e in new_entries:
+        name = e["username"]
+        email = f"{name}@{domain}" if domain else name
+        table.add_row(name, email, "[yellow]pending[/yellow]")
+
+    console.print(table)
+    console.print(f"[dim]Run [bold]ign8mail autocreated list[/bold] to review.[/dim]")
+
+
+@_autocreated_app.command()
+def enable(
+    name: str = typer.Argument(..., help="Username of the auto-created mailbox"),
+    domain: str = typer.Option("", envvar="IGN8_DOMAIN", help="Mail domain — used for display"),
+) -> None:
+    """Keep an auto-created mailbox (mark it as enabled)."""
+    entries = _load_autocreated(_vault)
+    if name not in entries:
+        console.print(f"[red]Error:[/red] '{name}' not found in auto-created mailboxes.")
+        raise typer.Exit(1)
+    entries[name]["status"] = "enabled"
+    _save_autocreated(entries, _vault)
+    email = f"{name}@{domain}" if domain else name
+    console.print(f"[green]Mailbox [bold]{email}[/bold] enabled.[/green]")
+
+
+@_autocreated_app.command()
+def disable(
+    name: str = typer.Argument(..., help="Username of the auto-created mailbox"),
+    domain: str = typer.Option("", envvar="IGN8_DOMAIN", help="Mail domain — used for display"),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+) -> None:
+    """Stop accepting new mail to an auto-created mailbox (existing mail kept)."""
+    entries = _load_autocreated(_vault)
+    if name not in entries:
+        console.print(f"[red]Error:[/red] '{name}' not found in auto-created mailboxes.")
+        raise typer.Exit(1)
+
+    ipv4, priv_key = _autocreated_setup(work_dir)
+    setup = _make_setup(ipv4, priv_key)
+    setup.connect(retries=3, delay=5)
+    try:
+        setup.disable_user(name)
+    finally:
+        setup.disconnect()
+
+    entries[name]["status"] = "disabled"
+    _save_autocreated(entries, _vault)
+    email = f"{name}@{domain}" if domain else name
+    console.print(f"[yellow]Mailbox [bold]{email}[/bold] disabled — future mail will bounce.[/yellow]")
+
+
+@_autocreated_app.command()
+def silence(
+    name: str = typer.Argument(..., help="Username to silence"),
+    domain: str = typer.Option("", envvar="IGN8_DOMAIN", help="Mail domain — used for display"),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+) -> None:
+    """Delete an auto-created mailbox and permanently block future creation."""
+    entries = _load_autocreated(_vault)
+
+    ipv4, priv_key = _autocreated_setup(work_dir)
+    setup = _make_setup(ipv4, priv_key)
+    setup.connect(retries=3, delay=5)
+    try:
+        setup.silence_user(name)
+    finally:
+        setup.disconnect()
+
+    entries.pop(name, None)
+    entries[name] = {"status": "silenced"}
+    _save_autocreated(entries, _vault)
+    vault_data = vault.load(_vault) if _vault.exists() else {}
+    vault_data.get("mailbox_passwords", {}).pop(name, None)
+    vault.save(vault_data, _vault)
+
+    email = f"{name}@{domain}" if domain else name
+    console.print(f"[red]Mailbox [bold]{email}[/bold] silenced and purged.[/red]")
 
 
 @app.command(name="list")
