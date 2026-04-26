@@ -644,6 +644,148 @@ def silence(
     console.print(f"[red]Mailbox [bold]{email}[/bold] silenced and purged.[/red]")
 
 
+@app.command()
+def dmarc_stats(
+    domain: str = typer.Option(..., envvar="IGN8_DOMAIN", help="Mail domain"),
+    imap_host: str = typer.Option("", help="IMAP hostname (default: mail.<domain>)"),
+    mailbox: str = typer.Option("dmarc", help="Local part of the DMARC reports address"),
+    delete: bool = typer.Option(False, "--delete", help="Delete parsed report emails after reading"),
+) -> None:
+    """Fetch and display DMARC aggregate report statistics."""
+    import gzip
+    import imaplib
+    import io
+    import ssl
+    import zipfile
+    import xml.etree.ElementTree as ET
+    import email as emaillib
+    from datetime import datetime, timezone
+
+    host = imap_host or f"mail.{domain}"
+    password = vault.get_mailbox_password(mailbox, _vault)
+
+    ctx = ssl.create_default_context()
+    try:
+        imap = imaplib.IMAP4_SSL(host, 993, ssl_context=ctx)
+    except Exception as exc:
+        console.print(f"[red]IMAP connection failed:[/red] {exc}")
+        raise typer.Exit(1)
+
+    imap.login(mailbox, password)
+    imap.select("INBOX")
+    _, data = imap.search(None, "ALL")
+    ids = data[0].split()
+
+    if not ids:
+        console.print(f"[yellow]No DMARC reports in {mailbox}@{domain}.[/yellow]")
+        imap.logout()
+        return
+
+    records: list[dict] = []
+
+    for msg_id in ids:
+        _, msg_data = imap.fetch(msg_id, "(RFC822)")
+        msg = emaillib.message_from_bytes(msg_data[0][1])
+
+        for part in msg.walk():
+            ct = part.get_content_type()
+            fn = part.get_filename() or ""
+            payload = part.get_payload(decode=True)
+            if not payload:
+                continue
+
+            xml_bytes: bytes | None = None
+            if fn.endswith(".zip") or ct == "application/zip":
+                with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+                    for name in zf.namelist():
+                        if name.endswith(".xml"):
+                            xml_bytes = zf.read(name)
+                            break
+            elif fn.endswith(".gz") or ct in ("application/gzip", "application/x-gzip"):
+                xml_bytes = gzip.decompress(payload)
+            elif fn.endswith(".xml") or ct == "application/xml":
+                xml_bytes = payload
+
+            if not xml_bytes:
+                continue
+
+            try:
+                root = ET.fromstring(xml_bytes)
+            except ET.ParseError:
+                continue
+
+            meta = root.find("report_metadata")
+            org = meta.findtext("org_name", "") if meta is not None else ""
+            begin = int(meta.findtext("date_range/begin", "0") or 0) if meta is not None else 0
+            end = int(meta.findtext("date_range/end", "0") or 0) if meta is not None else 0
+
+            for rec in root.findall("record"):
+                row = rec.find("row")
+                if row is None:
+                    continue
+                source_ip = row.findtext("source_ip", "")
+                count = int(row.findtext("count", "1") or 1)
+                pe = row.find("policy_evaluated")
+                disposition = pe.findtext("disposition", "") if pe is not None else ""
+                dkim_res = pe.findtext("dkim", "") if pe is not None else ""
+                spf_res = pe.findtext("spf", "") if pe is not None else ""
+                records.append({
+                    "org": org,
+                    "source_ip": source_ip,
+                    "count": count,
+                    "disposition": disposition,
+                    "dkim": dkim_res,
+                    "spf": spf_res,
+                    "begin": begin,
+                    "end": end,
+                })
+
+        if delete:
+            imap.store(msg_id, "+FLAGS", "\\Deleted")
+
+    if delete:
+        imap.expunge()
+    imap.logout()
+
+    if not records:
+        console.print("[yellow]No parseable DMARC records found.[/yellow]")
+        return
+
+    def _color_result(val: str) -> str:
+        return f"[green]{val}[/green]" if val == "pass" else f"[red]{val}[/red]" if val == "fail" else val
+
+    def _color_disp(val: str) -> str:
+        return f"[green]{val}[/green]" if val == "none" else f"[yellow]{val}[/yellow]"
+
+    table = Table(title=f"DMARC aggregate reports — {domain}", show_lines=False)
+    table.add_column("Org", style="cyan")
+    table.add_column("Source IP")
+    table.add_column("Count", justify="right")
+    table.add_column("DKIM", justify="center")
+    table.add_column("SPF", justify="center")
+    table.add_column("Disposition", justify="center")
+    table.add_column("Period")
+
+    for r in sorted(records, key=lambda x: (-x["count"], x["org"])):
+        begin_str = datetime.fromtimestamp(r["begin"], tz=timezone.utc).strftime("%Y-%m-%d") if r["begin"] else ""
+        end_str = datetime.fromtimestamp(r["end"], tz=timezone.utc).strftime("%Y-%m-%d") if r["end"] else ""
+        period = f"{begin_str} → {end_str}" if begin_str else ""
+        table.add_row(
+            r["org"],
+            r["source_ip"],
+            str(r["count"]),
+            _color_result(r["dkim"]),
+            _color_result(r["spf"]),
+            _color_disp(r["disposition"]),
+            period,
+        )
+
+    console.print(table)
+    total = sum(r["count"] for r in records)
+    passed = sum(r["count"] for r in records if r["dkim"] == "pass" and r["spf"] == "pass")
+    console.print(f"\n[dim]Total messages: {total} — fully passing: {passed} ({100*passed//total}%)[/dim]")
+
+
 @app.command(name="list")
 def list_inboxes(
     domain: str = typer.Option("", envvar="IGN8_DOMAIN", help="Mail domain — used for display"),
