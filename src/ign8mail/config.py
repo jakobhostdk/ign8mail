@@ -1,4 +1,4 @@
-from pydantic import EmailStr, field_validator
+from pydantic import AliasChoices, EmailStr, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,7 +9,9 @@ class Config(BaseSettings):
     domain: str
     admin_email: EmailStr
     hetzner_token: str
-    cloudflare_token: str
+    cloudflare_token: str = Field(
+        validation_alias=AliasChoices("IGN8_CLOUDFLARE_TOKEN", "IGN8_CLOUDFLARE"),
+    )
     cloudflare_zone_id: str
     cloudflare_email: str = ""   # required when using a Global API Key; omit for API Tokens
 
