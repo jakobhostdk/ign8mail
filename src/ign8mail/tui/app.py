@@ -409,8 +409,15 @@ class MailApp(App[None]):
         self.call_from_thread(self._populate_messages, msgs, username, folder)
 
     def _populate_messages(self, msgs: list[MessageSummary], username: str, folder: str) -> None:
+        # Skip if user already navigated away from this folder before the worker finished
+        if self.current_account != username or self.current_folder != folder:
+            return
         self.messages = msgs
         view = self.query_one("#message-list", ListView)
+        # `clear()` is async — items aren't gone from the NodeList yet when we append below.
+        # We don't set per-item IDs (IMAP UIDs can collide across folders, which raises
+        # DuplicateIds during the brief window before clear() completes); the selected
+        # index is enough to recover the UID from self.messages.
         view.clear()
         for m in msgs:
             marker = " " if m.seen else "●"
@@ -418,16 +425,20 @@ class MailApp(App[None]):
             subj = _truncate(m.subject, 50)
             date = _short_date(m.date)
             label = f"{marker} {sender:22} {subj:50} {date}"
-            view.append(ListItem(Label(label), id=f"m-{m.uid}"))
+            view.append(ListItem(Label(label)))
         self.query_one("#body-view", Static).update("")
         self.current_message = None
         self.query_one("#messages-title", Static).update(f"{username} / {folder} ({len(msgs)})")
 
     @on(ListView.Selected, "#message-list")
     def on_message_selected(self, event: ListView.Selected) -> None:
-        if event.item and event.item.id and self.current_account and self.current_folder:
-            uid = event.item.id[2:]
-            self.load_body(self.current_account, self.current_folder, uid)
+        if not self.current_account or not self.current_folder:
+            return
+        idx = event.list_view.index
+        if idx is None or idx < 0 or idx >= len(self.messages):
+            return
+        uid = self.messages[idx].uid
+        self.load_body(self.current_account, self.current_folder, uid)
 
     @work(thread=True, exclusive=True)
     def load_body(self, username: str, folder: str, uid: str) -> None:

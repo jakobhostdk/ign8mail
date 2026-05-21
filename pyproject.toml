@@ -22,6 +22,7 @@ dependencies = [
     "ansible-vault>=2",
     "django>=4.2",
     "textual>=0.80",
+    "pyyaml>=6",
 ]
 
 [project.scripts]

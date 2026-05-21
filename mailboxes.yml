@@ -1,0 +1,31 @@
+# Desired mailboxes at IGN8_DOMAIN.
+#
+# `ign8mail seed` reads this file, sends a small test mail to each address
+# that isn't already in the vault, and lets the server's autocreate policy
+# daemon provision the system user + Maildir. The fresh per-user password
+# the daemon generates is then synced into the vault.
+#
+# - Mail is sent via SMTP submission (port 587) from your machine — NOT
+#   from localhost on the server, because `permit_mynetworks` would
+#   short-circuit the policy check.
+# - The sender must be an existing authenticated account (e.g. `jira`).
+#   `seed` picks the first account in `mailbox_passwords` automatically;
+#   override with `--sender`.
+# - The list is idempotent: names already present in the vault are skipped.
+
+mailboxes:
+  - consulting
+  - daniel
+  - dmarc
+  - google
+  - heimdal
+  - info
+  - jakob
+  - lyngknud
+  - lyngknuden
+  - mail
+  - main
+  - noemail
+  - pypi
+  - valimail
+  - zerothreat

@@ -576,6 +576,195 @@ def enable_autocreate(
     console.print("[green]Autocreate policy daemon deployed and Postfix updated.[/green]")
 
 
+@app.command()
+def seed(
+    domain: str = typer.Option(..., envvar="IGN8_DOMAIN", help="Mail domain"),
+    mailboxes_file: Path = typer.Option(
+        Path("mailboxes.yml"), help="YAML file listing desired mailboxes"
+    ),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+    sender: str = typer.Option(
+        "", help="Local-part of the authenticated sender (default: first account in vault)"
+    ),
+    sender_password: str = typer.Option(
+        "", help="Override sender's SMTP password (default: from vault)"
+    ),
+    smtp_host: str = typer.Option("", help="SMTP submission host (default: mail.<domain>)"),
+    smtp_port: int = typer.Option(587, help="SMTP submission port"),
+    subject: str = typer.Option("ign8mail seed", help="Subject of the seed message"),
+    wait: float = typer.Option(
+        3.0, help="Seconds to wait for the policy daemon to write its log"
+    ),
+) -> None:
+    """Send a seed email to each address in mailboxes.yml so the server's autocreate
+    daemon provisions the mailbox, then sync the new passwords into the vault.
+
+    Mail must come from outside the server (port 587, SASL auth) — Postfix's
+    `permit_mynetworks` would otherwise short-circuit the policy check.
+    """
+    import smtplib
+    import ssl
+    import time
+    from email.message import EmailMessage
+
+    import yaml
+
+    if not mailboxes_file.exists():
+        console.print(f"[red]Error:[/red] mailbox list not found at {mailboxes_file}.")
+        raise typer.Exit(1)
+    try:
+        data = yaml.safe_load(mailboxes_file.read_text()) or {}
+    except yaml.YAMLError as e:
+        console.print(f"[red]Error:[/red] could not parse {mailboxes_file}: {e}")
+        raise typer.Exit(1)
+    desired: list[str] = [str(x).strip() for x in (data.get("mailboxes") or []) if str(x).strip()]
+    if not desired:
+        console.print(f"[yellow]No mailboxes listed in {mailboxes_file}.[/yellow]")
+        return
+
+    if not _vault.exists():
+        console.print(f"[red]Error:[/red] vault not found at {_vault}.")
+        raise typer.Exit(1)
+    vault_data = vault.load(_vault)
+    passwords: dict[str, str] = vault_data.get("mailbox_passwords") or {}
+
+    if not sender:
+        if not passwords:
+            console.print(
+                "[red]Error:[/red] no existing accounts in the vault to authenticate as. "
+                "Create one first with [bold]ign8mail create-mailbox <name>[/bold]."
+            )
+            raise typer.Exit(1)
+        sender = sorted(passwords.keys())[0]
+    if not sender_password:
+        sender_password = passwords.get(sender, "")
+    if not sender_password:
+        console.print(f"[red]Error:[/red] no password for sender {sender!r} in vault.")
+        raise typer.Exit(1)
+
+    smtp_host = smtp_host or f"mail.{domain}"
+    sender_addr = f"{sender}@{domain}"
+
+    to_seed = [n for n in desired if n not in passwords]
+    already_known = [n for n in desired if n in passwords]
+    if not to_seed:
+        console.print("[green]All requested mailboxes are already in the vault.[/green]")
+        if already_known:
+            console.print(f"[dim]Known: {', '.join(already_known)}[/dim]")
+        return
+
+    console.print(
+        f"Sending seed mail from [cyan]{sender_addr}[/cyan] via "
+        f"{smtp_host}:{smtp_port} to [bold]{len(to_seed)}[/bold] recipient(s)…"
+    )
+
+    ctx = ssl.create_default_context()
+    sent: list[str] = []
+    failed: list[tuple[str, str]] = []
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as s:
+            s.ehlo()
+            s.starttls(context=ctx)
+            s.ehlo()
+            s.login(sender, sender_password)
+            for name in to_seed:
+                recipient = f"{name}@{domain}"
+                msg = EmailMessage()
+                msg["From"] = sender_addr
+                msg["To"] = recipient
+                msg["Subject"] = subject
+                msg.set_content(
+                    f"This message was sent by `ign8mail seed` to bootstrap {recipient}."
+                )
+                try:
+                    s.send_message(msg)
+                    sent.append(name)
+                except smtplib.SMTPRecipientsRefused as e:
+                    # Most common: the policy daemon DID create the user but its
+                    # postmap write hadn't propagated before Postfix re-checked
+                    # `reject_unlisted_recipient`. The user usually exists anyway —
+                    # the sync below will confirm.
+                    refused = next(iter(e.recipients.values()), (0, b""))
+                    code, resp = refused[0], refused[1]
+                    detail = resp.decode("latin-1", errors="replace") if isinstance(resp, bytes) else str(resp)
+                    failed.append((name, f"SMTP {code}: {detail.strip()}"))
+                except smtplib.SMTPException as e:
+                    failed.append((name, f"{type(e).__name__}: {e}"))
+    except Exception as e:
+        console.print(f"[red]SMTP error:[/red] {type(e).__name__}: {e}")
+        raise typer.Exit(1) from e
+
+    if wait > 0 and sent:
+        console.print(f"[dim]Waiting {wait:.1f}s for policy daemon to write its log…[/dim]")
+        time.sleep(wait)
+
+    state_path = work_dir / "state.json"
+    if not state_path.exists():
+        console.print(f"[red]Error:[/red] no state file at {state_path}.")
+        raise typer.Exit(1)
+    state = json.loads(state_path.read_text())
+    ipv4 = state.get("ipv4", "")
+    priv_key = work_dir / "keys" / "ign8mail"
+    if not ipv4 or not priv_key.exists():
+        console.print("[red]Error:[/red] missing server IP or SSH key.")
+        raise typer.Exit(1)
+
+    cfg = Config(
+        domain="placeholder",
+        admin_email="placeholder@placeholder.com",  # type: ignore[arg-type]
+        hetzner_token="placeholder",
+        cloudflare_token="placeholder",
+        cloudflare_zone_id="placeholder",
+    )
+    setup = MailServerSetup(cfg, host=ipv4, private_key_path=str(priv_key))
+    setup.connect(retries=3, delay=5)
+    try:
+        new_entries = setup.sync_autocreated()
+    finally:
+        setup.disconnect()
+
+    vault_data.setdefault("mailbox_passwords", {})
+    vault_data.setdefault("autocreated_mailboxes", {})
+    synced: list[str] = []
+    for e in new_entries:
+        name = e["username"]
+        vault_data["mailbox_passwords"][name] = e["password"]
+        vault_data["autocreated_mailboxes"][name] = {
+            "password": e["password"],
+            "status": "pending",
+            "ts": e.get("ts", 0),
+        }
+        synced.append(name)
+    if synced:
+        vault.save(vault_data, _vault)
+
+    fail_map = dict(failed)
+    synced_set = set(synced)
+    table = Table(title=f"Seed results — {domain}", show_lines=False)
+    table.add_column("Mailbox", style="cyan")
+    table.add_column("Result")
+    table.add_column("Detail")
+    truly_failed = 0
+    for name in desired:
+        if name in already_known:
+            table.add_row(f"{name}@{domain}", "[dim]skip[/dim]", "already in vault")
+        elif name in synced_set:
+            # The autocreate log proves the mailbox was created on the server,
+            # even if SMTP returned 550 (recipient-table re-check race).
+            note = "" if name in sent else "created via policy daemon"
+            table.add_row(f"{name}@{domain}", "[green]✓ created[/green]", note)
+        else:
+            truly_failed += 1
+            reason = fail_map.get(name, "no log entry — re-run `ign8mail seed`")
+            table.add_row(f"{name}@{domain}", "[red]✗[/red]", reason)
+    console.print(table)
+    console.print(
+        f"[bold green]{len(synced)} created[/bold green]  ·  "
+        f"[dim]{len(already_known)} already known[/dim]  ·  "
+        f"[red]{truly_failed} failed[/red]"
+    )
+
+
 # ---------------------------------------------------------------------------
 # autocreated subapp
 # ---------------------------------------------------------------------------
