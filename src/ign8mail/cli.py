@@ -201,6 +201,46 @@ def configure_thunderbird(
 
 
 @app.command()
+def read(
+    account: str = typer.Argument("", help="Optional: account to focus on launch (e.g. alice or alice@example.com)"),
+    domain: str = typer.Option("", envvar="IGN8_DOMAIN", help="Mail domain (defaults to IGN8_DOMAIN)"),
+    imap_host: str = typer.Option("", help="IMAP hostname (default: mail.<domain>)"),
+    smtp_host: str = typer.Option("", help="SMTP hostname (default: mail.<domain>)"),
+) -> None:
+    """Open the multi-account TUI mail reader."""
+    focus_username: str | None = None
+    if account:
+        if "@" in account:
+            focus_username = account.split("@")[0]
+            if not domain:
+                domain = account.split("@")[1]
+        else:
+            focus_username = account
+
+    if not domain:
+        console.print("[red]Error:[/red] provide --domain or IGN8_DOMAIN.")
+        raise typer.Exit(1)
+    if not _vault.exists():
+        console.print(f"[red]Error:[/red] vault not found at {_vault}.")
+        raise typer.Exit(1)
+
+    imap_host = imap_host or f"mail.{domain}"
+    smtp_host = smtp_host or f"mail.{domain}"
+    archived_path = _vault.parent / "tui_archived.json"
+
+    from ign8mail.tui.app import MailApp
+
+    MailApp(
+        vault_path=_vault,
+        archived_path=archived_path,
+        domain=domain,
+        imap_host=imap_host,
+        smtp_host=smtp_host,
+        focus_account=focus_username,
+    ).run()
+
+
+@app.command()
 def switch_inbox(
     account: str = typer.Argument(..., help="Email address or local username (e.g. alice or alice@example.com)"),
     domain: str = typer.Option("", envvar="IGN8_DOMAIN", help="Mail domain — required when account has no @"),
@@ -922,6 +962,97 @@ def list_inboxes(
         table.add_row(u["username"], email, maildir_str)
 
     console.print(table)
+
+
+@app.command(name="passwd-check")
+def passwd_check(
+    domain: str = typer.Option(..., envvar="IGN8_DOMAIN", help="Mail domain"),
+    imap_host: str = typer.Option("", help="IMAP hostname (default: mail.<domain>)"),
+    workers: int = typer.Option(8, help="Parallel login probes"),
+    timeout: float = typer.Option(10.0, help="Per-probe timeout in seconds"),
+) -> None:
+    """Probe IMAP login for every account in the vault — non-destructive.
+
+    Reports which vault passwords succeed/fail against the live server, so you can
+    spot drift before running `ign8mail passwd-recycle`.
+    """
+    import imaplib
+    import ssl
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    if not _vault.exists():
+        console.print(f"[red]Error:[/red] vault not found at {_vault}.")
+        raise typer.Exit(1)
+
+    vault_data = vault.load(_vault)
+    passwords: dict[str, str] = vault_data.get("mailbox_passwords") or {}
+    if not passwords:
+        console.print("[yellow]No mailbox passwords in vault.[/yellow]")
+        return
+
+    host = imap_host or f"mail.{domain}"
+    ctx = ssl.create_default_context()
+
+    def probe(username: str, password: str) -> tuple[str, str, str]:
+        if not password:
+            return username, "SKIP", "no password stored"
+        try:
+            imap = imaplib.IMAP4_SSL(host, 993, ssl_context=ctx, timeout=timeout)
+        except Exception as e:
+            return username, "FAIL", f"connect: {type(e).__name__}: {e}"
+        try:
+            imap.login(username, password)
+        except imaplib.IMAP4.error as e:
+            detail = e.args[0] if e.args else str(e)
+            if isinstance(detail, bytes):
+                detail = detail.decode("latin-1", errors="replace")
+            return username, "FAIL", str(detail).strip()
+        except Exception as e:
+            return username, "FAIL", f"{type(e).__name__}: {e}"
+        try:
+            imap.logout()
+        except Exception:
+            pass
+        return username, "OK", ""
+
+    results: list[tuple[str, str, str]] = []
+    with console.status(f"Probing {len(passwords)} accounts on {host}…"):
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(probe, u, p) for u, p in sorted(passwords.items())]
+            for fut in as_completed(futures):
+                results.append(fut.result())
+
+    # FAILs first, then SKIPs, then OKs — alpha within each group
+    rank = {"FAIL": 0, "SKIP": 1, "OK": 2}
+    results.sort(key=lambda r: (rank.get(r[1], 3), r[0]))
+
+    table = Table(title=f"Vault credential check — {host}", show_lines=False)
+    table.add_column("Username", style="cyan")
+    table.add_column("Email")
+    table.add_column("Status")
+    table.add_column("Detail")
+    counts = {"OK": 0, "FAIL": 0, "SKIP": 0}
+    for username, status, detail in results:
+        counts[status] = counts.get(status, 0) + 1
+        if status == "OK":
+            cell = "[green]OK[/green]"
+        elif status == "SKIP":
+            cell = "[dim]SKIP[/dim]"
+        else:
+            cell = "[red]FAIL[/red]"
+        table.add_row(username, f"{username}@{domain}", cell, detail)
+    console.print(table)
+    console.print(
+        f"[bold green]{counts['OK']} OK[/bold green]  ·  "
+        f"[bold red]{counts['FAIL']} FAIL[/bold red]  ·  "
+        f"[dim]{counts['SKIP']} skipped[/dim]"
+    )
+    if counts["FAIL"]:
+        console.print(
+            "[dim]Fix per account on the server, or run "
+            "[bold]ign8mail passwd-recycle[/bold] to reset everything.[/dim]"
+        )
+        raise typer.Exit(1)
 
 
 @app.command()

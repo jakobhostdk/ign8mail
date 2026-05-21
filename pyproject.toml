@@ -21,6 +21,7 @@ dependencies = [
     "jinja2>=3",
     "ansible-vault>=2",
     "django>=4.2",
+    "textual>=0.80",
 ]
 
 [project.scripts]
