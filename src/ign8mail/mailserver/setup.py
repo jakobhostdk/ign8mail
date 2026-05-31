@@ -250,6 +250,64 @@ _LANDING_PAGE = """\
 </html>
 """
 
+_WEBMAIL_WSGI = '''\
+import json, secrets
+from pathlib import Path
+from django.conf import settings
+
+_d = json.loads(Path('/etc/ign8mail/webmail.json').read_text())
+if not settings.configured:
+    settings.configure(
+        DEBUG=False,
+        SECRET_KEY=_d.get('secret_key') or secrets.token_hex(32),
+        ALLOWED_HOSTS=['*'],
+        INSTALLED_APPS=['ign8mail.webmail'],
+        MIDDLEWARE=[
+            'django.middleware.security.SecurityMiddleware',
+            'django.contrib.sessions.middleware.SessionMiddleware',
+            'django.middleware.common.CommonMiddleware',
+            'django.middleware.csrf.CsrfViewMiddleware',
+        ],
+        SESSION_ENGINE='django.contrib.sessions.backends.signed_cookies',
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SECURE=True,
+        CSRF_TRUSTED_ORIGINS=['https://' + _d['domain'], 'https://webmail.' + _d['domain']],
+        TEMPLATES=[{
+            'BACKEND': 'django.template.backends.django.DjangoTemplates',
+            'DIRS': [], 'APP_DIRS': True,
+            'OPTIONS': {'context_processors': ['django.template.context_processors.request']},
+        }],
+        ROOT_URLCONF='ign8mail.webmail.urls',
+        WEBMAIL_DOMAIN=_d['domain'],
+        WEBMAIL_IMAP_HOST=_d['imap_host'],
+        WEBMAIL_PASSWORDS=_d['passwords'],
+        WEBMAIL_AUTOCREATED=_d.get('autocreated', {}),
+        WEBMAIL_WORK_DIR='/etc/ign8mail',
+        WEBMAIL_VAULT_PATH='/etc/ign8mail/webmail.json',
+        WEBMAIL_SERVER_MODE=True,
+        WEBMAIL_ADMIN_PASSWORD=_d.get('admin_password', ''),
+    )
+import django; django.setup()
+from django.core.wsgi import get_wsgi_application
+application = get_wsgi_application()
+'''
+
+_WEBMAIL_SERVICE = """\
+[Unit]
+Description=ign8mail webmail interface
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/opt/ign8mail-webmail/venv/bin/gunicorn --workers 2 --bind 127.0.0.1:8080 wsgi:application
+WorkingDirectory=/opt/ign8mail-webmail
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+"""
+
 # Packages installed on the server
 PACKAGES = "postfix postfix-mysql dovecot-core dovecot-imapd dovecot-pop3d rspamd certbot nginx redis-server"
 
@@ -263,6 +321,27 @@ _FOLDER_MAP = {
 
 # Standard IMAP folders created via doveadm so Dovecot registers them properly.
 _STANDARD_MAILBOXES = ("Drafts", "Sent", "Trash", "Junk")
+
+
+def _find_project_root() -> Path:
+    """Return the ign8mail project root by reading the package's install metadata."""
+    import json
+    from importlib.metadata import distribution
+
+    dist = distribution("ign8mail")
+    raw = dist.read_text("direct_url.json") or ""
+    if raw:
+        info = json.loads(raw)
+        url = info.get("url", "")
+        if url.startswith("file://"):
+            root = Path(url[7:])
+            if (root / "pyproject.toml").exists():
+                return root
+    # Fallback: walk up from this file (works for true editable installs)
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "pyproject.toml").exists():
+            return parent
+    raise RuntimeError("Cannot find ign8mail project root — is the package installed from source?")
 
 
 def _maildir_dirs(home: str) -> str:
@@ -427,6 +506,26 @@ class MailServerSetup:
         if stdout.channel.recv_exit_status() != 0:
             raise RuntimeError(f"chpasswd failed for {username}: {stderr.read().decode()}")
 
+    def fix_maildir(self, username: str) -> None:
+        """Create a missing Maildir for an existing user and register standard folders."""
+        assert self._ssh, "Call connect() first"
+        # Resolve actual home directory from passwd rather than assuming /home/<user>
+        home_raw = self._exec(f"getent passwd {username} | cut -d: -f6").strip()
+        home = home_raw if home_raw else f"/home/{username}"
+        dirs = _maildir_dirs(home)
+        self._exec(f"mkdir -p {dirs} && chown -R {username}:{username} {home}/Maildir")
+        self._create_mailboxes(username)
+
+    def fix_dovecot_first_valid_uid(self, uid: int) -> None:
+        """Lower Dovecot first_valid_uid to allow system users with low UIDs."""
+        assert self._ssh, "Call connect() first"
+        self._exec(
+            "grep -q '^first_valid_uid' /etc/dovecot/conf.d/10-mail.conf && "
+            f"sed -i 's/^first_valid_uid.*/first_valid_uid = {uid}/' /etc/dovecot/conf.d/10-mail.conf || "
+            f"echo 'first_valid_uid = {uid}' >> /etc/dovecot/conf.d/10-mail.conf"
+        )
+        self._exec("systemctl restart dovecot")
+
     def add_user(self, username: str, password: str) -> None:
         assert self._ssh, "Call connect() first"
         self._exec(f"id {username} 2>/dev/null || useradd -m -s /bin/bash {username}")
@@ -449,17 +548,23 @@ class MailServerSetup:
 
     def configure_nginx(self, domain: str) -> None:
         """Install the landing page and configure nginx with the existing Let's Encrypt cert."""
+        from ign8mail.thunderbird import generate_autoconfig_xml
         assert self._ssh, "Call connect() first"
         self._exec("apt-get install -y -qq nginx")
         sftp = self._ssh.open_sftp()
         try:
-            self._exec("mkdir -p /var/www/ign8mail")
+            self._exec("mkdir -p /var/www/ign8mail/.well-known/autoconfig/mail")
             sftp.putfo(io.BytesIO(_LANDING_PAGE.encode()), "/var/www/ign8mail/index.html")
+            autoconfig_xml = generate_autoconfig_xml(domain, f"mail.{domain}")
+            sftp.putfo(
+                io.BytesIO(autoconfig_xml.encode()),
+                "/var/www/ign8mail/.well-known/autoconfig/mail/config-v1.1.xml",
+            )
             nginx_conf = (
                 "server {\n"
                 "    listen 80;\n"
                 "    listen [::]:80;\n"
-                f"    server_name mail.{domain} {domain};\n"
+                f"    server_name mail.{domain} autoconfig.{domain} {domain};\n"
                 "    location /.well-known/acme-challenge/ { root /var/www/html; }\n"
                 "    location / { return 301 https://$host$request_uri; }\n"
                 "}\n"
@@ -467,7 +572,7 @@ class MailServerSetup:
                 "server {\n"
                 "    listen 443 ssl;\n"
                 "    listen [::]:443 ssl;\n"
-                f"    server_name mail.{domain};\n"
+                f"    server_name mail.{domain} autoconfig.{domain};\n"
                 "\n"
                 f"    ssl_certificate     /etc/letsencrypt/live/mail.{domain}/fullchain.pem;\n"
                 f"    ssl_certificate_key /etc/letsencrypt/live/mail.{domain}/privkey.pem;\n"
@@ -551,6 +656,127 @@ class MailServerSetup:
             "permit_sasl_authenticated, reject_unauth_destination, reject_unlisted_recipient'"
         )
         self._exec("systemctl reload postfix")
+
+    def deploy_webmail(
+        self,
+        domain: str,
+        cert_pem: bytes,
+        key_pem: bytes,
+        passwords: dict[str, str],
+        autocreated: dict[str, dict[str, str]],
+        admin_password: str = "",
+    ) -> None:
+        """Build, upload, and start the webmail interface on the server."""
+        import subprocess
+        import sys
+        import tempfile
+
+        assert self._ssh
+
+        project_root = _find_project_root()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "wheel", ".", "--no-deps", "-w", tmpdir],
+                capture_output=True,
+                text=True,
+                cwd=str(project_root),
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"pip wheel failed:\n{result.stderr}")
+            wheels = list(Path(tmpdir).glob("*.whl"))
+            if not wheels:
+                raise RuntimeError("No wheel produced")
+            wheel_path = wheels[0]
+
+            self._exec("apt-get install -y -qq python3-pip")
+            self._exec("mkdir -p /opt/ign8mail-webmail /etc/ign8mail")
+
+            sftp = self._ssh.open_sftp()
+            try:
+                sftp.put(str(wheel_path), f"/tmp/{wheel_path.name}")
+                import secrets as _secrets
+                config: dict[str, object] = {
+                    "domain": domain,
+                    "imap_host": f"mail.{domain}",
+                    "passwords": passwords,
+                    "autocreated": autocreated,
+                    "admin_password": admin_password,
+                    "secret_key": _secrets.token_hex(32),
+                }
+                sftp.putfo(
+                    io.BytesIO(json.dumps(config, indent=2).encode()),
+                    "/etc/ign8mail/webmail.json",
+                )
+                sftp.putfo(io.BytesIO(cert_pem), "/etc/ign8mail/webmail.crt")
+                sftp.putfo(io.BytesIO(key_pem), "/etc/ign8mail/webmail.key")
+                sftp.putfo(io.BytesIO(_WEBMAIL_WSGI.encode()), "/opt/ign8mail-webmail/wsgi.py")
+                sftp.putfo(
+                    io.BytesIO(_WEBMAIL_SERVICE.encode()),
+                    "/etc/systemd/system/ign8mail-webmail.service",
+                )
+            finally:
+                sftp.close()
+
+        self._exec("chmod 600 /etc/ign8mail/webmail.json /etc/ign8mail/webmail.key")
+        self._exec("apt-get install -y -qq python3-venv")
+        self._exec("python3 -m venv /opt/ign8mail-webmail/venv")
+        self._exec(
+            f"/opt/ign8mail-webmail/venv/bin/pip install --quiet "
+            f"--force-reinstall /tmp/{wheel_path.name} gunicorn redis"
+        )
+        self._exec(
+            "systemctl daemon-reload && "
+            "systemctl enable ign8mail-webmail && "
+            "systemctl restart ign8mail-webmail"
+        )
+        self._configure_webmail_nginx(domain)
+
+    def _configure_webmail_nginx(self, domain: str) -> None:
+        assert self._ssh
+        proxy_block = (
+            "    location / {\n"
+            "        proxy_pass http://127.0.0.1:8080;\n"
+            "        proxy_set_header Host $host;\n"
+            "        proxy_set_header X-Real-IP $remote_addr;\n"
+            "        proxy_set_header X-Forwarded-Proto https;\n"
+            "    }\n"
+        )
+        nginx_conf = (
+            # Port 80: Cloudflare Flexible SSL mode connects here
+            "server {\n"
+            "    listen 80;\n"
+            "    listen [::]:80;\n"
+            f"    server_name webmail.{domain};\n"
+            "\n"
+            + proxy_block
+            + "}\n"
+            "\n"
+            # Port 443: Cloudflare Full SSL mode connects here (self-signed cert is fine)
+            "server {\n"
+            "    listen 443 ssl;\n"
+            "    listen [::]:443 ssl;\n"
+            f"    server_name webmail.{domain};\n"
+            "\n"
+            "    ssl_certificate     /etc/ign8mail/webmail.crt;\n"
+            "    ssl_certificate_key /etc/ign8mail/webmail.key;\n"
+            "    ssl_protocols TLSv1.2 TLSv1.3;\n"
+            "\n"
+            + proxy_block
+            + "}\n"
+        )
+        sftp = self._ssh.open_sftp()
+        try:
+            sftp.putfo(
+                io.BytesIO(nginx_conf.encode()),
+                "/etc/nginx/sites-available/ign8mail-webmail",
+            )
+        finally:
+            sftp.close()
+        self._exec(
+            "ln -sf /etc/nginx/sites-available/ign8mail-webmail "
+            "/etc/nginx/sites-enabled/ign8mail-webmail && "
+            "nginx -t && systemctl reload nginx"
+        )
 
     def sync_autocreated(self) -> list[dict]:
         """Read and clear the autocreated mailbox log from the server."""
@@ -650,10 +876,12 @@ class MailServerSetup:
 
     def _issue_cert(self) -> None:
         cfg = self._cfg
+        self._exec("systemctl stop nginx || true")
         self._exec(
             f"certbot certonly --standalone --non-interactive --agree-tos "
             f"-m {cfg.admin_email} -d mail.{cfg.domain}"
         )
+        self._exec("systemctl start nginx || true")
         self._exec(
             f"postconf -e 'smtpd_tls_cert_file = /etc/letsencrypt/live/mail.{cfg.domain}/fullchain.pem'"
         )

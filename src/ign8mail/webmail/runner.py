@@ -10,6 +10,7 @@ def start(
     autocreated: dict,
     work_dir: Path,
     vault_path: Path,
+    admin_password: str = "",
     port: int = 8000,
 ) -> None:
     import secrets
@@ -21,6 +22,14 @@ def start(
             SECRET_KEY=secrets.token_hex(32),
             ALLOWED_HOSTS=["localhost", "127.0.0.1"],
             INSTALLED_APPS=["ign8mail.webmail"],
+            MIDDLEWARE=[
+                "django.middleware.security.SecurityMiddleware",
+                "django.contrib.sessions.middleware.SessionMiddleware",
+                "django.middleware.common.CommonMiddleware",
+                "django.middleware.csrf.CsrfViewMiddleware",
+            ],
+            SESSION_ENGINE="django.contrib.sessions.backends.signed_cookies",
+            SESSION_COOKIE_HTTPONLY=True,
             TEMPLATES=[{
                 "BACKEND": "django.template.backends.django.DjangoTemplates",
                 "DIRS": [],
@@ -36,6 +45,7 @@ def start(
             WEBMAIL_AUTOCREATED=autocreated,
             WEBMAIL_WORK_DIR=str(work_dir),
             WEBMAIL_VAULT_PATH=str(vault_path),
+            WEBMAIL_ADMIN_PASSWORD=admin_password,
         )
 
     import django

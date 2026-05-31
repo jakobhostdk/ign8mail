@@ -426,19 +426,38 @@ class MailApp(App[None]):
             date = _short_date(m.date)
             label = f"{marker} {sender:22} {subj:50} {date}"
             view.append(ListItem(Label(label)))
-        self.query_one("#body-view", Static).update("")
         self.current_message = None
         self.query_one("#messages-title", Static).update(f"{username} / {folder} ({len(msgs)})")
+        if msgs:
+            # Focus the list so j/k navigates messages (not the folder tree).
+            # Highlight the first message and load its body so the right pane
+            # isn't blank — the Highlighted handler takes over for subsequent
+            # navigation.
+            view.focus()
+            view.index = 0
+        else:
+            self.query_one("#body-view", Static).update("")
 
-    @on(ListView.Selected, "#message-list")
-    def on_message_selected(self, event: ListView.Selected) -> None:
+    def _preview_highlighted(self, idx: int | None) -> None:
         if not self.current_account or not self.current_folder:
             return
-        idx = event.list_view.index
         if idx is None or idx < 0 or idx >= len(self.messages):
             return
         uid = self.messages[idx].uid
+        # Skip re-fetching the message we're already showing (e.g. when the
+        # Highlighted event fires from a programmatic index change right after
+        # an explicit load).
+        if self.current_message and self.current_message.uid == uid:
+            return
         self.load_body(self.current_account, self.current_folder, uid)
+
+    @on(ListView.Highlighted, "#message-list")
+    def on_message_highlighted(self, event: ListView.Highlighted) -> None:
+        self._preview_highlighted(event.list_view.index)
+
+    @on(ListView.Selected, "#message-list")
+    def on_message_selected(self, event: ListView.Selected) -> None:
+        self._preview_highlighted(event.list_view.index)
 
     @work(thread=True, exclusive=True)
     def load_body(self, username: str, folder: str, uid: str) -> None:
@@ -458,18 +477,25 @@ class MailApp(App[None]):
         self.call_from_thread(self._show_body, msg)
 
     def _show_body(self, msg: FullMessage | None) -> None:
+        from rich.markup import escape as _esc
+
         self.current_message = msg
         if msg is None:
             self.query_one("#body-view", Static).update("[red]Could not load message.[/red]")
             return
         body = msg.body_text or _html_to_text(msg.body_html) or "(empty)"
+        # Normalize CRLF/CR → LF (a bare \r returns the terminal cursor and
+        # visually erases the line) and escape brackets so mail content isn't
+        # interpreted as Rich markup. The static [bold] tags below stay literal.
+        body = _esc(body.replace("\r\n", "\n").replace("\r", "\n"))
+        cc_line = f"[bold]Cc:[/bold] {_esc(msg.cc)}\n" if msg.cc else ""
         header = (
-            f"[bold]From:[/bold] {msg.sender}\n"
-            f"[bold]To:[/bold] {msg.to}\n"
-            + (f"[bold]Cc:[/bold] {msg.cc}\n" if msg.cc else "")
-            + f"[bold]Date:[/bold] {msg.date}\n"
-            f"[bold]Subject:[/bold] {msg.subject}\n"
-            "─" * 60 + "\n"
+            f"[bold]From:[/bold] {_esc(msg.sender)}\n"
+            f"[bold]To:[/bold] {_esc(msg.to)}\n"
+            + cc_line
+            + f"[bold]Date:[/bold] {_esc(msg.date)}\n"
+            f"[bold]Subject:[/bold] {_esc(msg.subject)}\n"
+            + "─" * 60 + "\n"
         )
         self.query_one("#body-view", Static).update(header + body)
 

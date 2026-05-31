@@ -1,6 +1,7 @@
 """Views for the webmail interface."""
 
 import json
+from functools import wraps
 from pathlib import Path
 
 from django.conf import settings
@@ -9,6 +10,15 @@ from django.shortcuts import redirect, render
 from django.views.decorators.http import require_POST
 
 from . import imap_client
+
+
+def _require_login(view_fn):  # type: ignore[no-untyped-def]
+    @wraps(view_fn)
+    def wrapper(request: HttpRequest, *args, **kwargs) -> HttpResponse:  # type: ignore[no-untyped-def]
+        if not request.session.get("ok"):
+            return redirect("login")
+        return view_fn(request, *args, **kwargs)
+    return wrapper
 
 
 def _cfg() -> dict:
@@ -30,23 +40,52 @@ def _mailbox_status(name: str, autocreated: dict) -> str:
 
 
 def _sidebar_mailboxes(cfg: dict) -> list[dict]:
-    result = []
-    for name, pw in sorted(cfg["passwords"].items()):
-        status = _mailbox_status(name, cfg["autocreated"])
+    from concurrent.futures import ThreadPoolExecutor
+
+    host = cfg["imap_host"]
+    autocreated = cfg["autocreated"]
+
+    def _check(name: str, pw: str) -> dict | None:
+        status = _mailbox_status(name, autocreated)
         if status == "silenced":
-            continue
-        unread = imap_client.unread_count(cfg["imap_host"], name, pw)
-        result.append({
+            return None
+        unread = imap_client.unread_count(host, name, pw)
+        return {
             "name": name,
             "unread": unread,
             "status": status,
             "reachable": unread >= 0,
-            "is_autocreated": name in cfg["autocreated"],
-        })
+            "is_autocreated": name in autocreated,
+        }
+
+    items = list(cfg["passwords"].items())
+    with ThreadPoolExecutor(max_workers=min(len(items), 10)) as pool:
+        result = [mb for mb in pool.map(lambda p: _check(*p), items) if mb is not None]
+
     result.sort(key=lambda m: (-m["unread"] if m["reachable"] else 0, m["name"]))
     return result
 
 
+def login_view(request: HttpRequest) -> HttpResponse:
+    if request.session.get("ok"):
+        return redirect("index")
+    error = ""
+    if request.method == "POST":
+        pw = request.POST.get("password", "")
+        admin_pw = getattr(settings, "WEBMAIL_ADMIN_PASSWORD", "")
+        if admin_pw and pw == admin_pw:
+            request.session["ok"] = True
+            return redirect("index")
+        error = "Wrong password."
+    return render(request, "webmail/login.html", {"error": error})
+
+
+def logout_view(request: HttpRequest) -> HttpResponse:
+    request.session.flush()
+    return redirect("login")
+
+
+@_require_login
 def index(request: HttpRequest) -> HttpResponse:
     cfg = _cfg()
     mailboxes = _sidebar_mailboxes(cfg)
@@ -57,6 +96,7 @@ def index(request: HttpRequest) -> HttpResponse:
     })
 
 
+@_require_login
 def mailbox_view(request: HttpRequest, name: str) -> HttpResponse:
     cfg = _cfg()
     pw = cfg["passwords"].get(name)
@@ -76,6 +116,7 @@ def mailbox_view(request: HttpRequest, name: str) -> HttpResponse:
     })
 
 
+@_require_login
 def message_view(request: HttpRequest, name: str, seq: str) -> HttpResponse:
     cfg = _cfg()
     pw = cfg["passwords"].get(name)
@@ -95,11 +136,52 @@ def message_view(request: HttpRequest, name: str, seq: str) -> HttpResponse:
 
 
 @require_POST
+@_require_login
 def mailbox_action(request: HttpRequest, name: str) -> HttpResponse:
     action = request.POST.get("action")
     if action not in ("silence", "disable"):
         return redirect("index")
 
+    if getattr(settings, "WEBMAIL_SERVER_MODE", False):
+        return _mailbox_action_server(name, action)
+    return _mailbox_action_client(name, action)
+
+
+def _mailbox_action_server(name: str, action: str) -> HttpResponse:
+    """Run disable/silence directly on the server via subprocess."""
+    import subprocess
+
+    if action in ("disable", "silence"):
+        subprocess.run(
+            f"sed -i '/^{name} /d' /etc/postfix/local_recipients && "
+            "postmap /etc/postfix/local_recipients && systemctl reload postfix",
+            shell=True, check=False,
+        )
+    if action == "silence":
+        subprocess.run(
+            f"grep -qxF '{name}' /etc/postfix/silenced_recipients || "
+            f"echo '{name}' >> /etc/postfix/silenced_recipients",
+            shell=True, check=False,
+        )
+        subprocess.run(["userdel", "-r", name], check=False)
+
+    config_path = Path(settings.WEBMAIL_VAULT_PATH)
+    if config_path.exists():
+        data = json.loads(config_path.read_text())
+        if action == "silence":
+            data.get("passwords", {}).pop(name, None)
+            settings.WEBMAIL_PASSWORDS.pop(name, None)
+        data.setdefault("autocreated", {})[name] = {
+            "status": "silenced" if action == "silence" else "disabled"
+        }
+        config_path.write_text(json.dumps(data, indent=2))
+        settings.WEBMAIL_AUTOCREATED = data.get("autocreated", {})
+
+    return redirect("index")
+
+
+def _mailbox_action_client(name: str, action: str) -> HttpResponse:
+    """SSH into the remote server to run disable/silence, then update the vault."""
     cfg = _cfg()
     work_dir = cfg["work_dir"]
     state_path = work_dir / "state.json"

@@ -3,6 +3,7 @@
 import enum
 import json
 import os
+import platform
 import re
 import secrets
 import shutil
@@ -23,15 +24,16 @@ from ign8mail.keys import dkim_private_key_pem, dkim_public_key_base64, save_key
 from ign8mail.mailserver.setup import MailServerSetup
 from ign8mail import thunderbird
 
-app = typer.Typer(name="ign8mail", help="Ignite a production mail server in minutes.")
+app = typer.Typer(name="ign8mail", help="Ignite a production mail server in minutes.", invoke_without_command=True)
 console = Console()
 
 # Active vault path — set by @app.callback() before any subcommand runs.
 _vault: Path = Path(".ign8mail/vault.yml")
 
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def _main(
+    ctx: typer.Context,
     vault_file: Optional[Path] = typer.Option(
         None,
         "--vault",
@@ -46,6 +48,8 @@ def _main(
         _vault = vault_file
     if _vault.exists():
         vault.inject_env(_vault)
+    if ctx.invoked_subcommand is None:
+        _print_intro()
 
 
 class _Format(str, enum.Enum):
@@ -198,6 +202,291 @@ def configure_thunderbird(
         "Open Thunderbird — the account will appear automatically.",
         title="Thunderbird configured",
     ))
+
+
+def _thunderbird_quit_and_relaunch(relaunch: bool = True) -> bool:
+    """Quit Thunderbird if running, wait for it to exit, then optionally relaunch.
+
+    Returns True if Thunderbird was running and was quit.
+    """
+    import signal
+    import time
+
+    pids = []
+    try:
+        out = subprocess.run(["pgrep", "-x", "thunderbird"], capture_output=True, text=True)
+        pids += [int(p) for p in out.stdout.split() if p.strip()]
+    except Exception:
+        pass
+    try:
+        out = subprocess.run(["pgrep", "-x", "Thunderbird"], capture_output=True, text=True)
+        pids += [int(p) for p in out.stdout.split() if p.strip()]
+    except Exception:
+        pass
+
+    if not pids:
+        return False
+
+    # Graceful quit via AppleScript on macOS
+    if platform.system() == "Darwin":
+        subprocess.run(
+            ["osascript", "-e", 'tell application "Thunderbird" to quit'],
+            capture_output=True,
+        )
+    else:
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except Exception:
+                pass
+
+    # Wait up to 10 s for process to exit
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        time.sleep(0.3)
+        try:
+            out = subprocess.run(["pgrep", "-x", "thunderbird"], capture_output=True)
+            out2 = subprocess.run(["pgrep", "-x", "Thunderbird"], capture_output=True)
+            if out.returncode != 0 and out2.returncode != 0:
+                break
+        except Exception:
+            break
+
+    if relaunch:
+        if platform.system() == "Darwin":
+            subprocess.Popen(["open", "-a", "Thunderbird"])
+        else:
+            subprocess.Popen(["thunderbird"])
+
+    return True
+
+
+@app.command(name="sync-thunderbird")
+def sync_thunderbird(
+    domain: str = typer.Option(..., envvar="IGN8_DOMAIN", help="Mail domain"),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+    profile: Path = typer.Option(None, help="Thunderbird profile directory (auto-detected if omitted)"),
+) -> None:
+    """Add all active mailboxes to Thunderbird and store their passwords."""
+    state_path = work_dir / "state.json"
+    if not state_path.exists():
+        console.print("[red]Error:[/red] No state file — run `ign8mail up` first.")
+        raise typer.Exit(1)
+
+    state = json.loads(state_path.read_text())
+    ipv4 = state.get("ipv4", "")
+    priv_key = work_dir / "keys" / "ign8mail"
+    if not ipv4 or not priv_key.exists():
+        console.print("[red]Error:[/red] Missing server IP or SSH key.")
+        raise typer.Exit(1)
+
+    # Resolve Thunderbird profile
+    tb_profile = profile or thunderbird.find_profile()
+    if tb_profile is None:
+        console.print("[red]Error:[/red] Thunderbird profile not found. Pass --profile explicitly.")
+        raise typer.Exit(1)
+
+    # Load vault
+    passwords: dict = {}
+    autocreated: dict = {}
+    if _vault.exists():
+        try:
+            vdata = vault.load(_vault)
+            passwords = vdata.get("mailbox_passwords", {}) or {}
+            autocreated = vdata.get("autocreated_mailboxes", {}) or {}
+        except Exception:
+            pass
+
+    # Fetch users from server
+    cfg = Config(
+        domain="placeholder",
+        admin_email="placeholder@placeholder.com",  # type: ignore[arg-type]
+        hetzner_token="placeholder",
+        cloudflare_token="placeholder",
+        cloudflare_zone_id="placeholder",
+    )
+    setup = MailServerSetup(cfg, host=ipv4, private_key_path=str(priv_key))
+    setup.connect(retries=3, delay=5)
+    try:
+        users = setup.list_users()
+    finally:
+        setup.disconnect()
+
+    imap_host = f"mail.{domain}"
+    credentials: dict[str, str] = {}
+    added: list[str] = []
+    skipped: list[str] = []
+    no_pw: list[str] = []
+
+    existing = set(thunderbird.find_accounts(tb_profile))
+
+    for u in users:
+        name = u["username"]
+        ac = autocreated.get(name, {})
+        if ac.get("status") in ("silenced", "disabled"):
+            skipped.append(name)
+            continue
+
+        email = f"{name}@{domain}"
+        pw = passwords.get(name, "")
+        if not pw:
+            no_pw.append(name)
+            continue
+
+        if email not in existing:
+            added.append(name)
+
+        credentials[email] = pw
+
+    # Quit Thunderbird before touching profile files
+    was_running = _thunderbird_quit_and_relaunch(relaunch=False)
+    if was_running:
+        console.print("[dim]Thunderbird quit — writing profile…[/dim]")
+
+    for name in added:
+        thunderbird.configure_account(tb_profile, f"{name}@{domain}", name, imap_host)
+
+    # Fix any existing accounts that were configured with full email as userName
+    thunderbird.fix_usernames(tb_profile, domain)
+
+    if was_running:
+        if platform.system() == "Darwin":
+            subprocess.Popen(["open", "-a", "Thunderbird"])
+        else:
+            subprocess.Popen(["thunderbird"])
+        console.print("[dim]Thunderbird relaunched.[/dim]")
+
+    table = Table(show_header=False, box=None, padding=(0, 1))
+    table.add_column("key", style="bold")
+    table.add_column("value")
+    table.add_row("Profile", str(tb_profile))
+    table.add_row("Accounts added", str(len(added)) + (f" ({', '.join(added)})" if added else ""))
+    if skipped:
+        table.add_row("Skipped (inactive)", ", ".join(skipped))
+    if no_pw:
+        table.add_row("No password in vault", ", ".join(no_pw))
+    console.print(Panel(table, title="[bold]sync-thunderbird[/bold]"))
+
+
+@app.command(name="sync-aerc")
+def sync_aerc(
+    domain: str = typer.Option(..., envvar="IGN8_DOMAIN", help="Mail domain"),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+    config: Path = typer.Option(None, help="aerc config directory (auto-detected if omitted)"),
+) -> None:
+    """Add all active mailboxes to aerc's accounts.conf."""
+    from ign8mail import aerc as _aerc
+
+    state_path = work_dir / "state.json"
+    if not state_path.exists():
+        console.print("[red]Error:[/red] No state file — run `ign8mail up` first.")
+        raise typer.Exit(1)
+
+    state = json.loads(state_path.read_text())
+    ipv4 = state.get("ipv4", "")
+    priv_key = work_dir / "keys" / "ign8mail"
+    if not ipv4 or not priv_key.exists():
+        console.print("[red]Error:[/red] Missing server IP or SSH key.")
+        raise typer.Exit(1)
+
+    # Resolve aerc config dir
+    aerc_config = config or _aerc.find_config() or _aerc.ensure_config()
+
+    # Load vault
+    passwords: dict = {}
+    autocreated: dict = {}
+    if _vault.exists():
+        try:
+            vdata = vault.load(_vault)
+            passwords = vdata.get("mailbox_passwords", {}) or {}
+            autocreated = vdata.get("autocreated_mailboxes", {}) or {}
+        except Exception:
+            pass
+
+    # Fetch users from server
+    cfg = Config(
+        domain="placeholder",
+        admin_email="placeholder@placeholder.com",  # type: ignore[arg-type]
+        hetzner_token="placeholder",
+        cloudflare_token="placeholder",
+        cloudflare_zone_id="placeholder",
+    )
+    setup = MailServerSetup(cfg, host=ipv4, private_key_path=str(priv_key))
+    setup.connect(retries=3, delay=5)
+    try:
+        users = setup.list_users()
+    finally:
+        setup.disconnect()
+
+    imap_host = f"mail.{domain}"
+    credentials: dict[str, str] = {}
+    skipped: list[str] = []
+    no_pw: list[str] = []
+
+    for u in users:
+        name = u["username"]
+        ac = autocreated.get(name, {})
+        if ac.get("status") in ("silenced", "disabled"):
+            skipped.append(name)
+            continue
+        pw = passwords.get(name, "")
+        if not pw:
+            no_pw.append(name)
+            continue
+        credentials[name] = pw
+
+    written = _aerc.configure_accounts(aerc_config, domain, imap_host, credentials)
+
+    table = Table(show_header=False, box=None, padding=(0, 1))
+    table.add_column("key", style="bold")
+    table.add_column("value")
+    table.add_row("Config", str(aerc_config / "accounts.conf"))
+    table.add_row("Accounts written", str(written))
+    if skipped:
+        table.add_row("Skipped (inactive)", ", ".join(skipped))
+    if no_pw:
+        table.add_row("No password in vault", ", ".join(no_pw))
+    console.print(Panel(table, title="[bold]sync-aerc[/bold]"))
+
+
+@app.command()
+def read(
+    account: str = typer.Argument("", help="Optional: account to focus on launch (e.g. alice or alice@example.com)"),
+    domain: str = typer.Option("", envvar="IGN8_DOMAIN", help="Mail domain (defaults to IGN8_DOMAIN)"),
+    imap_host: str = typer.Option("", help="IMAP hostname (default: mail.<domain>)"),
+    smtp_host: str = typer.Option("", help="SMTP hostname (default: mail.<domain>)"),
+) -> None:
+    """Open the multi-account TUI mail reader."""
+    focus_username: str | None = None
+    if account:
+        if "@" in account:
+            focus_username = account.split("@")[0]
+            if not domain:
+                domain = account.split("@")[1]
+        else:
+            focus_username = account
+
+    if not domain:
+        console.print("[red]Error:[/red] provide --domain or IGN8_DOMAIN.")
+        raise typer.Exit(1)
+    if not _vault.exists():
+        console.print(f"[red]Error:[/red] vault not found at {_vault}.")
+        raise typer.Exit(1)
+
+    imap_host = imap_host or f"mail.{domain}"
+    smtp_host = smtp_host or f"mail.{domain}"
+    archived_path = _vault.parent / "tui_archived.json"
+
+    from ign8mail.tui.app import MailApp
+
+    MailApp(
+        vault_path=_vault,
+        archived_path=archived_path,
+        domain=domain,
+        imap_host=imap_host,
+        smtp_host=smtp_host,
+        focus_account=focus_username,
+    ).run()
 
 
 @app.command()
@@ -536,6 +825,80 @@ def configure_dkim(
         setup.disconnect()
 
     console.print(f"[green]DKIM signing configured for [bold]{domain}[/bold] (selector: mail).[/green]")
+
+
+@app.command()
+def deploy_webmail(
+    domain: str = typer.Option(..., envvar="IGN8_DOMAIN", help="Mail domain"),
+    cloudflare_token: str = typer.Option(..., envvar="IGN8_CLOUDFLARE_TOKEN", help="Cloudflare API token"),
+    cloudflare_zone_id: str = typer.Option(..., envvar="IGN8_CLOUDFLARE_ZONE_ID", help="Cloudflare Zone ID"),
+    cloudflare_email: str = typer.Option("", envvar="IGN8_CLOUDFLARE_EMAIL", help="Cloudflare account email (only for Global API Key auth)"),
+    admin_password: str = typer.Option("", envvar="IGN8_WEBMAIL_PASSWORD", help="Webmail admin password (generated if omitted)"),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+) -> None:
+    """Deploy the webmail interface to webmail.<domain> via Cloudflare proxy."""
+    state_path = work_dir / "state.json"
+    if not state_path.exists():
+        console.print("[red]Error:[/red] No state file found — run `ign8mail up` first.")
+        raise typer.Exit(1)
+
+    state = json.loads(state_path.read_text())
+    ipv4 = state.get("ipv4", "")
+    priv_key = work_dir / "keys" / "ign8mail"
+
+    if not ipv4:
+        console.print("[red]Error:[/red] No server IP in state file.")
+        raise typer.Exit(1)
+    if not priv_key.exists():
+        console.print(f"[red]Error:[/red] SSH key not found at {priv_key}.")
+        raise typer.Exit(1)
+    if not _vault.exists():
+        console.print("[red]Error:[/red] Vault not found — run `ign8mail vault-init` first.")
+        raise typer.Exit(1)
+
+    vault_data = vault.load(_vault)
+    passwords: dict[str, str] = vault_data.get("mailbox_passwords") or {}
+    autocreated: dict = vault_data.get("autocreated_mailboxes") or {}
+
+    if not admin_password:
+        admin_password = secrets.token_urlsafe(16)
+        console.print(f"    [dim]Generated webmail password: [bold]{admin_password}[/bold][/dim]")
+
+    console.print(f"[1/3] Adding webmail.{domain} DNS record and generating origin cert...")
+    dns = CloudflareDNS(cloudflare_token, cloudflare_zone_id, domain, cloudflare_email)
+    cert_pem, key_pem, origin_cert_used = dns.provision_webmail(ipv4)
+    if origin_cert_used:
+        console.print("    [dim]Cloudflare origin certificate issued (SSL mode: Full strict)[/dim]")
+    else:
+        console.print(
+            "    [yellow]Self-signed cert (token lacks SSL permission) — "
+            "set Cloudflare SSL mode to 'Full' (not strict)[/yellow]"
+        )
+
+    console.print("[2/3] Building and uploading webmail package...")
+    cfg = Config(
+        domain="placeholder",
+        admin_email="placeholder@placeholder.com",  # type: ignore[arg-type]
+        hetzner_token="placeholder",
+        cloudflare_token="placeholder",
+        cloudflare_zone_id="placeholder",
+    )
+    setup = MailServerSetup(cfg, host=ipv4, private_key_path=str(priv_key))
+    setup.connect(retries=3, delay=5)
+    try:
+        console.print("[3/3] Installing dependencies and starting webmail service...")
+        setup.deploy_webmail(domain, cert_pem, key_pem, passwords, autocreated, admin_password)
+    finally:
+        setup.disconnect()
+
+    ssl_mode = "Full (strict)" if origin_cert_used else "Full"
+    console.print(Panel(
+        f"URL:      [bold]https://webmail.{domain}[/bold]\n"
+        f"Password: [bold yellow]{admin_password}[/bold yellow]\n"
+        f"Cert:     {'Cloudflare origin' if origin_cert_used else 'self-signed'}\n\n"
+        f"[dim]Cloudflare → SSL/TLS → set mode to \"{ssl_mode}\"[/dim]",
+        title="[bold green]Webmail deployed[/bold green]",
+    ))
 
 
 @app.command()
@@ -1140,16 +1503,114 @@ def list_inboxes(
         console.print("[yellow]No mail accounts found.[/yellow]")
         return
 
+    # Load vault for passwords and autocreated info
+    passwords: dict = {}
+    autocreated: dict = {}
+    if _vault.exists():
+        try:
+            vdata = vault.load(_vault)
+            passwords = vdata.get("mailbox_passwords", {}) or {}
+            autocreated = vdata.get("autocreated_mailboxes", {}) or {}
+        except Exception:
+            pass
+
+    # Thunderbird configured accounts (local check)
+    tb_accounts: set = set()
+    tb_profile = thunderbird.find_profile()
+    if tb_profile:
+        try:
+            tb_accounts = set(thunderbird.find_accounts(tb_profile))
+        except Exception:
+            pass
+
+    # Parallel unread counts via IMAP
+    imap_host = f"mail.{domain}" if domain else ""
+    unread_map: dict[str, int] = {}
+    if imap_host and passwords:
+        from concurrent.futures import ThreadPoolExecutor
+        from ign8mail.webmail import imap_client
+
+        usernames = [u["username"] for u in users]
+
+        def _fetch_unread(username: str) -> tuple[str, int]:
+            pw = passwords.get(username, "")
+            if not pw:
+                return username, -2
+            return username, imap_client.unread_count(imap_host, username, pw)
+
+        with ThreadPoolExecutor(max_workers=min(len(usernames), 10)) as pool:
+            for name, count in pool.map(_fetch_unread, usernames):
+                unread_map[name] = count
+
     table = Table(title="Mail inboxes", show_lines=False)
     table.add_column("Username", style="cyan")
     table.add_column("Email" if domain else "Account")
     table.add_column("Maildir", justify="center")
+    if unread_map:
+        table.add_column("Unread", justify="right")
+    if tb_profile:
+        table.add_column("Thunderbird", justify="center")
+    table.add_column("Autocreated", justify="center")
 
     for u in users:
-        email = f"{u['username']}@{domain}" if domain else u["username"]
+        name = u["username"]
+        email = f"{name}@{domain}" if domain else name
         maildir_str = "[green]yes[/green]" if u["has_maildir"] else "[yellow]no[/yellow]"
-        table.add_row(u["username"], email, maildir_str)
+        row: list[str] = [name, email, maildir_str]
 
+        if unread_map:
+            cnt = unread_map.get(name, -2)
+            if cnt == -2:
+                row.append("[dim]—[/dim]")
+            elif cnt < 0:
+                row.append("[red]err[/red]")
+            elif cnt == 0:
+                row.append("[dim]0[/dim]")
+            else:
+                row.append(f"[bold]{cnt}[/bold]")
+
+        if tb_profile:
+            row.append("[green]yes[/green]" if email in tb_accounts else "[dim]no[/dim]")
+
+        ac_info = autocreated.get(name)
+        if ac_info is None:
+            row.append("[dim]no[/dim]")
+        else:
+            status = ac_info.get("status", "active")
+            if status == "silenced":
+                row.append("[dim]silenced[/dim]")
+            elif status == "disabled":
+                row.append("[dim]disabled[/dim]")
+            else:
+                row.append("[yellow]yes[/yellow]")
+
+        table.add_row(*row)
+
+    console.print(table)
+
+
+@app.command(name="show-passwords")
+def show_passwords(
+    domain: str = typer.Option("", envvar="IGN8_DOMAIN", help="Mail domain — used for display"),
+) -> None:
+    """Print all mailbox passwords from the vault."""
+    if not _vault.exists():
+        console.print("[red]Error:[/red] No vault found. Run `ign8mail vault-init` first.")
+        raise typer.Exit(1)
+
+    vault_data = vault.load(_vault)
+    passwords: dict[str, str] = vault_data.get("mailbox_passwords") or {}
+    if not passwords:
+        console.print("[yellow]No passwords stored in vault.[/yellow]")
+        return
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Username")
+    table.add_column("Email" if domain else "Account")
+    table.add_column("Password", style="yellow")
+    for username, pw in sorted(passwords.items()):
+        email = f"{username}@{domain}" if domain else username
+        table.add_row(username, email, pw)
     console.print(table)
 
 
@@ -1321,6 +1782,45 @@ def passwd_recycle(
         table.add_row(username, email, password, str(profile))
 
     console.print(table)
+
+    # Sync Thunderbird accounts to match active ign8mail mailboxes
+    tb_profile = thunderbird.find_profile()
+    if tb_profile:
+        already = thunderbird.find_accounts(tb_profile)
+        active_emails = {f"{u}@{domain}" for u in new_passwords}
+
+        # Remove stale accounts for this domain
+        removed = [e for e in already if e.endswith(f"@{domain}") and e not in active_emails]
+        for email in removed:
+            thunderbird.remove_account(tb_profile, email)
+        if removed:
+            console.print(f"[red]Removed from Thunderbird:[/red] {', '.join(removed)}")
+
+        # Add missing accounts
+        added = []
+        for username in new_passwords:
+            email = f"{username}@{domain}"
+            if email not in already:
+                thunderbird.configure_account(tb_profile, email, username, imap_host)
+                added.append(email)
+        if added:
+            console.print(f"[green]Added to Thunderbird:[/green] {', '.join(added)}")
+
+        thunderbird.fix_usernames(tb_profile, domain)
+        if added:
+            console.print("[dim]Thunderbird will prompt for passwords on next launch.[/dim]")
+    else:
+        console.print("[dim]Thunderbird profile not found — skipping.[/dim]")
+
+    # Sync aerc if configured
+    from ign8mail import aerc as _aerc
+    aerc_config = _aerc.find_config()
+    if aerc_config:
+        _aerc.configure_accounts(aerc_config, domain, imap_host, new_passwords)
+        console.print("[green]aerc:[/green] passwords updated.")
+    else:
+        console.print("[dim]aerc config not found — skipping.[/dim]")
+
     console.print(f"\n[dim]Run [bold]ign8mail switch-inbox <user>[/bold] to activate a mailbox.[/dim]")
 
 
@@ -1372,6 +1872,7 @@ def status(
     mail_user: str = typer.Option("", "--mail-user", help="Username (local part) for --check-mail"),
     mail_password: str = typer.Option("", "--mail-password", envvar="IGN8_MAIL_PASSWORD", help="Password for --check-mail (prompted if omitted)"),
     domain: str = typer.Option("", envvar="IGN8_DOMAIN", help="Mail domain — required for --check-mail"),
+    fix: bool = typer.Option(False, "--fix", help="Attempt to fix detected problems (missing maildir, etc.)"),
     format: _Format = typer.Option(_Format.pretty, help="Output format: pretty or json"),
 ) -> None:
     """Show the current state of the provisioned mail server."""
@@ -1387,6 +1888,9 @@ def status(
         "server_status": None,
         "services": None,
         "mail_test": None,
+        "mailbox_count": None,
+        "last_mail_ts": None,
+        "autocreate_daemon": None,
     }
 
     if state_path.exists():
@@ -1394,6 +1898,13 @@ def status(
         info["ipv4"] = state.get("ipv4")
         info["ipv6"] = state.get("ipv6")
         info["server_id"] = state.get("server_id")
+
+    if _vault.exists():
+        vault_data = vault.load(_vault)
+        info["mailbox_count"] = len(vault_data.get("mailbox_passwords") or {})
+        autocreated = vault_data.get("autocreated_mailboxes") or {}
+        timestamps = [v.get("ts", 0) for v in autocreated.values() if isinstance(v, dict) and v.get("ts")]
+        info["last_mail_ts"] = max(timestamps) if timestamps else None
 
     if hetzner_token and info["server_id"]:
         try:
@@ -1422,10 +1933,72 @@ def status(
                     services[svc] = out
                 except Exception:
                     services[svc] = "inactive"
+            try:
+                daemon_status = setup._exec("systemctl is-active ign8mail-policy").strip()
+                info["autocreate_daemon"] = daemon_status
+            except Exception:
+                info["autocreate_daemon"] = "inactive"
+
+            # TLS config from Postfix
+            tls: dict[str, str] = {}
+            try:
+                pc_out = setup._exec(
+                    "postconf smtpd_tls_cert_file smtpd_tls_key_file "
+                    "smtpd_use_tls smtpd_tls_security_level 2>/dev/null"
+                )
+                for line in pc_out.splitlines():
+                    if " = " in line:
+                        k, _, v = line.partition(" = ")
+                        tls[k.strip()] = v.strip()
+            except Exception:
+                pass
+
+            # DKIM signing key presence (rspamd stores as <domain>.mail.key)
+            try:
+                dkim_check = setup._exec(
+                    "ls /etc/rspamd/dkim/*.key 2>/dev/null | head -1 | grep -q . && echo ok || echo missing"
+                ).strip()
+                tls["dkim_key"] = dkim_check
+            except Exception:
+                pass
+
             setup.disconnect()
             info["services"] = services
+            if tls:
+                info["tls"] = tls
         except Exception as exc:
             info["services"] = {"error": str(exc)}
+
+        # External TLS checks (run locally, no SSH needed)
+        mail_host_tls = f"mail.{domain}" if domain else ""
+        if mail_host_tls:
+            tls = info.setdefault("tls", {})
+            import datetime as _dt
+            import socket as _socket
+            import ssl as _ssl
+            import smtplib as _smtplib
+
+            try:
+                with _smtplib.SMTP(mail_host_tls, 587, timeout=10) as _smtp:
+                    _smtp.ehlo()
+                    _smtp.starttls(context=_ssl.create_default_context())
+                tls["starttls_587"] = "ok"
+            except Exception as exc:
+                tls["starttls_587"] = f"failed: {exc}"
+
+            try:
+                _ctx = _ssl.create_default_context()
+                with _socket.create_connection((mail_host_tls, 993), timeout=10) as _sock:
+                    with _ctx.wrap_socket(_sock, server_hostname=mail_host_tls) as _ssock:
+                        cert = _ssock.getpeercert()
+                not_after = cert.get("notAfter", "")
+                _exp = _dt.datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z").replace(
+                    tzinfo=_dt.timezone.utc
+                )
+                days_left = (_exp - _dt.datetime.now(_dt.timezone.utc)).days
+                tls["cert_expiry_993"] = f"{_exp.strftime('%Y-%m-%d')} ({days_left}d)"
+            except Exception as exc:
+                tls["cert_expiry_993"] = f"error: {exc}"
 
     if check_mail:
         if not domain:
@@ -1439,7 +2012,11 @@ def status(
                 mail_password = vault.get_mailbox_password(mail_user, _vault)
             else:
                 mail_password = typer.prompt("Mail password", hide_input=True)
-        info["mail_test"] = _check_mail(f"mail.{domain}", mail_user, mail_password, domain)
+        mail_host = f"mail.{domain}"
+        info["mail_test"] = _run_check_with_fix(
+            mail_host, mail_user, mail_password, domain,
+            info.get("ipv4") or "", priv_key, fix,
+        )
 
     if format == _Format.json:
         console.print_json(json.dumps(info))
@@ -1495,6 +2072,7 @@ def webmail(
     domain: str = typer.Option(..., envvar="IGN8_DOMAIN", help="Mail domain"),
     imap_host: str = typer.Option("", help="IMAP hostname (default: mail.<domain>)"),
     port: int = typer.Option(8000, help="Local port to serve on"),
+    admin_password: str = typer.Option("", envvar="IGN8_WEBMAIL_PASSWORD", help="Webmail password (prompted if omitted)"),
     work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
 ) -> None:
     """Start the webmail interface in a local browser."""
@@ -1512,6 +2090,9 @@ def webmail(
         console.print("[yellow]No mailbox passwords in vault — add mailboxes first.[/yellow]")
         raise typer.Exit(1)
 
+    if not admin_password:
+        admin_password = typer.prompt("Webmail password", hide_input=True)
+
     console.print(
         f"Starting webmail on [bold]http://127.0.0.1:{port}[/bold] — press Ctrl+C to stop."
     )
@@ -1524,8 +2105,125 @@ def webmail(
         autocreated=autocreated,
         work_dir=work_dir,
         vault_path=_vault,
+        admin_password=admin_password,
         port=port,
     )
+
+
+@app.command(name="checkmail")
+def check_mail_cmd(
+    mail_user: str = typer.Option(..., "--mail-user", "-u", help="Username (local part) to test"),
+    domain: str = typer.Option(..., envvar="IGN8_DOMAIN", help="Mail domain"),
+    mail_password: str = typer.Option("", "--mail-password", envvar="IGN8_MAIL_PASSWORD", help="Password (read from vault if omitted)"),
+    imap_host: str = typer.Option("", "--imap-host", help="Override IMAP/SMTP host (default: mail.<domain>)"),
+    fix: bool = typer.Option(False, "--fix", help="Attempt to fix detected problems automatically"),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+) -> None:
+    """Send a test email and verify IMAP delivery for a mailbox."""
+    priv_key = work_dir / "keys" / "ign8mail"
+    state_path = work_dir / "state.json"
+
+    if not mail_password:
+        if _vault.exists():
+            mail_password = vault.get_mailbox_password(mail_user, _vault)
+        if not mail_password:
+            mail_password = typer.prompt("Mail password", hide_input=True)
+
+    ipv4 = ""
+    if state_path.exists():
+        ipv4 = json.loads(state_path.read_text()).get("ipv4", "")
+
+    host = imap_host or f"mail.{domain}"
+    result = _run_check_with_fix(host, mail_user, mail_password, domain, ipv4, priv_key, fix)
+
+    send_str = "[green]ok[/green]" if result["send_ok"] else "[red]failed[/red]"
+    recv_str = (
+        f"[green]ok[/green] ({result['latency_s']}s)"
+        if result["receive_ok"]
+        else "[red]failed[/red]"
+    )
+    table = Table(show_header=False, box=None, padding=(0, 1))
+    table.add_column("key", style="bold")
+    table.add_column("value")
+    table.add_row("Account", f"{mail_user}@{domain}")
+    table.add_row("SMTP send", send_str)
+    table.add_row("IMAP receive", recv_str)
+    if result.get("error"):
+        table.add_row("Error", f"[red]{result['error']}[/red]")
+
+    tb_profile = thunderbird.find_profile()
+    if tb_profile:
+        email = f"{mail_user}@{domain}"
+        configured = thunderbird.check_status(tb_profile, email)["configured"]
+        if not configured:
+            thunderbird.configure_account(tb_profile, email, mail_user, host)
+            configured = True
+        tb_acct = "[green]yes[/green]" if configured else "[red]no[/red]"
+        table.add_row("Thunderbird account", tb_acct)
+
+    console.print(Panel(table, title="[bold]checkmail[/bold]"))
+
+    if not result["receive_ok"]:
+        raise typer.Exit(1)
+
+
+def _run_check_with_fix(
+    mail_host: str,
+    mail_user: str,
+    mail_password: str,
+    domain: str,
+    ipv4: str,
+    priv_key: Path,
+    fix: bool,
+) -> dict:
+    """Run _check_mail and, if --fix is set, attempt to repair detected problems."""
+    result = _check_mail(mail_host, mail_user, mail_password, domain)
+    if not fix or not result.get("error"):
+        return result
+
+    error = result["error"]
+
+    # Fix 1: missing maildir (Dovecot "Internal error" on SELECT)
+    if "Internal error" in error and priv_key.exists() and ipv4:
+        console.print(f"[yellow]Fixing:[/yellow] creating maildir for {mail_user} on server…")
+        try:
+            setup = _make_setup(ipv4, priv_key)
+            setup.connect(retries=2, delay=3)
+            setup.fix_maildir(mail_user)
+            setup.disconnect()
+            console.print("[green]Maildir created — retrying…[/green]")
+            result = _check_mail(mail_host, mail_user, mail_password, domain)
+            error = result.get("error") or ""
+        except Exception as exc:
+            console.print(f"[red]Fix failed:[/red] {exc}")
+            return result
+
+    # Fix 2: Dovecot first_valid_uid (system user UID too low)
+    if result.get("error") and priv_key.exists() and ipv4:
+        try:
+            setup2 = _make_setup(ipv4, priv_key)
+            setup2.connect(retries=2, delay=3)
+            log_tail = setup2._exec(
+                "journalctl -u dovecot --no-pager -n 20 2>/dev/null || "
+                "tail -20 /var/log/mail.log 2>/dev/null || true"
+            ).strip()
+            if "not permitted" in log_tail and "first_valid_uid" in log_tail:
+                m = re.search(r"UID (\d+) not permitted", log_tail)
+                uid = int(m.group(1)) if m else 1
+                console.print(f"[yellow]Fixing:[/yellow] lowering Dovecot first_valid_uid to {uid}…")
+                setup2.fix_dovecot_first_valid_uid(uid)
+                setup2.disconnect()
+                console.print("[green]Dovecot restarted — retrying…[/green]")
+                result = _check_mail(mail_host, mail_user, mail_password, domain)
+            else:
+                setup2.disconnect()
+                if log_tail:
+                    console.print("[dim]Dovecot log:[/dim]")
+                    console.print(log_tail)
+        except Exception:
+            pass
+
+    return result
 
 
 def _check_mail(host: str, username: str, password: str, domain: str) -> dict:
@@ -1584,6 +2282,63 @@ def _check_mail(host: str, username: str, password: str, domain: str) -> dict:
     return result
 
 
+def _print_intro() -> None:
+    from rich.text import Text
+
+    state_path = Path(".ign8mail/state.json")
+    info_rows: list[tuple[str, str]] = []
+
+    if state_path.exists():
+        state = json.loads(state_path.read_text())
+        ipv4 = state.get("ipv4", "")
+        domain = os.environ.get("IGN8_DOMAIN", "")
+        if domain:
+            info_rows.append(("Domain", domain))
+        if ipv4:
+            info_rows.append(("Server", ipv4))
+        info_rows.append(("State", "[green]provisioned[/green]"))
+    else:
+        info_rows.append(("State", "[yellow]not provisioned[/yellow] — run [bold]ign8mail up[/bold]"))
+
+    if _vault.exists():
+        try:
+            vault_data = vault.load(_vault)
+            mb_count = len(vault_data.get("mailbox_passwords") or {})
+            if mb_count:
+                info_rows.append(("Mailboxes", str(mb_count)))
+        except Exception:
+            pass
+
+    info_table = Table(show_header=False, box=None, padding=(0, 1))
+    info_table.add_column("k", style="bold")
+    info_table.add_column("v")
+    for k, v in info_rows:
+        info_table.add_row(k, v)
+
+    cmds = [
+        ("status --check-services", "service + TLS health check"),
+        ("list", "show all inboxes with unread counts"),
+        ("sync-thunderbird", "sync all accounts to Thunderbird"),
+        ("sync-aerc", "sync all accounts to aerc"),
+        ("checkmail <user>", "send + receive test for one account"),
+        ("passwd-recycle", "rotate all mailbox passwords"),
+        ("--help", "full command reference"),
+    ]
+    cmd_table = Table(show_header=False, box=None, padding=(0, 1))
+    cmd_table.add_column("cmd", style="cyan")
+    cmd_table.add_column("desc", style="dim")
+    for cmd, desc in cmds:
+        cmd_table.add_row(f"ign8mail {cmd}", desc)
+
+    from rich.console import Group
+    from rich.rule import Rule
+    console.print(Panel(
+        Group(info_table, Rule(style="dim"), cmd_table),
+        title="[bold]ign8mail[/bold]",
+        padding=(1, 2),
+    ))
+
+
 def _print_status_pretty(info: dict) -> None:
     provisioned = info["provisioned"]
     state_str = "[green]provisioned[/green]" if provisioned else "[yellow]not provisioned[/yellow]"
@@ -1607,6 +2362,22 @@ def _print_status_pretty(info: dict) -> None:
         color = "green" if server_status == "running" else "red"
         table.add_row("Hetzner status", f"[{color}]{server_status}[/{color}]")
 
+    if info.get("mailbox_count") is not None:
+        table.add_row("Mailboxes", str(info["mailbox_count"]))
+
+    last_ts = info.get("last_mail_ts")
+    if last_ts:
+        import datetime
+        dt = datetime.datetime.fromtimestamp(last_ts, tz=datetime.timezone.utc)
+        table.add_row("Last mail", dt.strftime("%Y-%m-%d %H:%M UTC"))
+    elif info.get("mailbox_count") is not None:
+        table.add_row("Last mail", "[dim]none[/dim]")
+
+    daemon = info.get("autocreate_daemon")
+    if daemon is not None:
+        color = "green" if daemon == "active" else "red"
+        table.add_row("Autocreate daemon", f"[{color}]{daemon}[/{color}]")
+
     services = info.get("services")
     if services:
         for svc, state in services.items():
@@ -1615,6 +2386,25 @@ def _print_status_pretty(info: dict) -> None:
             else:
                 color = "green" if state == "active" else "red"
                 table.add_row(f"  {svc}", f"[{color}]{state}[/{color}]")
+
+    tls = info.get("tls")
+    if tls:
+        _TLS_LABELS = {
+            "smtpd_tls_cert_file": "cert file",
+            "smtpd_tls_key_file": "key file",
+            "smtpd_use_tls": "use TLS",
+            "smtpd_tls_security_level": "TLS level",
+            "dkim_key": "DKIM key",
+            "starttls_587": "STARTTLS :587",
+            "cert_expiry_993": "cert expiry :993",
+        }
+        table.add_row("TLS / DKIM", "")
+        for k, v in tls.items():
+            label = _TLS_LABELS.get(k, k)
+            ok_vals = {"ok", "may", "encrypt", "yes"}
+            is_ok = v == "ok" or v.startswith("/") or ("d)" in v and not v.startswith("error"))
+            color = "green" if is_ok or v in ok_vals else ("red" if "failed" in v or "error" in v or v == "missing" else "yellow")
+            table.add_row(f"  {label}", f"[{color}]{v}[/{color}]")
 
     mail_test = info.get("mail_test")
     if mail_test:
@@ -1697,6 +2487,7 @@ def ssh(
         console.print(f"[red]Error:[/red] SSH key not found at {priv_key}.")
         raise typer.Exit(1)
 
+    subprocess.run(["ssh-keygen", "-R", ipv4], capture_output=True)
     os.execvp("ssh", ["ssh", "-i", str(priv_key), "-o", "StrictHostKeyChecking=accept-new", f"{user}@{ipv4}"])
 
 

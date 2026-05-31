@@ -32,6 +32,12 @@ def provision(cfg: Config, public_key: str, state_path: Path) -> dict[str, str]:
         _net = _ipaddress.IPv6Network(server.public_net.ipv6.ip)
         _ipv6 = str(_net.network_address + 1)
 
+    _mail_hostname = f"mail.{cfg.domain}"
+    if _ipv4:
+        server.change_dns_ptr(ip=_ipv4, dns_ptr=_mail_hostname).wait_until_finished()
+    if _ipv6:
+        server.change_dns_ptr(ip=_ipv6, dns_ptr=_mail_hostname).wait_until_finished()
+
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps({
         "server_id": server.id,

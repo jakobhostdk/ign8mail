@@ -4,7 +4,9 @@ import email as _email
 import email.header
 import imaplib
 import ssl
+import time
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -47,8 +49,55 @@ def _connect(host: str, username: str, password: str) -> imaplib.IMAP4_SSL:
     return imap
 
 
+_CACHE_TTL = 60
+_local_cache: dict[str, tuple[int, float]] = {}
+_redis_client: Any = None
+
+
+def _redis() -> Any:
+    global _redis_client
+    if _redis_client is None:
+        try:
+            import redis
+            r = redis.Redis(host="localhost", port=6379, decode_responses=True, socket_timeout=1)
+            r.ping()
+            _redis_client = r
+        except Exception:
+            _redis_client = False  # don't retry
+    return _redis_client or None
+
+
+def _cache_get(key: str) -> int | None:
+    r = _redis()
+    if r:
+        try:
+            v = r.get(key)
+            return int(v) if v is not None else None
+        except Exception:
+            pass
+    entry = _local_cache.get(key)
+    if entry and time.monotonic() - entry[1] < _CACHE_TTL:
+        return entry[0]
+    return None
+
+
+def _cache_set(key: str, value: int) -> None:
+    r = _redis()
+    if r:
+        try:
+            r.setex(key, _CACHE_TTL, value)
+            return
+        except Exception:
+            pass
+    _local_cache[key] = (value, time.monotonic())
+
+
 def unread_count(host: str, username: str, password: str) -> int:
     """Return number of unseen messages, or -1 on connection error."""
+    key = f"wm:unread:{host}:{username}"
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
     try:
         imap = _connect(host, username, password)
     except Exception:
@@ -56,7 +105,9 @@ def unread_count(host: str, username: str, password: str) -> int:
     try:
         imap.select("INBOX", readonly=True)
         _, data = imap.search(None, "UNSEEN")
-        return len(data[0].split()) if data[0] else 0
+        count = len(data[0].split()) if data[0] else 0
+        _cache_set(key, count)
+        return count
     except Exception:
         return -1
     finally:
