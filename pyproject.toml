@@ -36,6 +36,14 @@ dev = [
     "mypy>=1.10",
 ]
 
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src/ign8mail",
+    "/tests",
+    "/README.md",
+    "/pyproject.toml",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/ign8mail"]
 
