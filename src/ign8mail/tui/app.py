@@ -27,6 +27,7 @@ Keys:
     u               Toggle Unread
     o               Open a link from the current message
     y               Copy message body to clipboard (OSC 52)
+    m               Toggle mouse — turn off to drag-select with the terminal natively
     a               Archive (hide) current account
     A               Toggle show archived
     g               Refresh accounts + folders
@@ -242,8 +243,10 @@ class HelpScreen(ModalScreen[None]):
         "  d delete    u toggle unread   o open link   y copy body\n\n"
         "[bold]Clipboard[/bold]\n"
         "  y copies the whole body via OSC 52.\n"
-        "  For partial selection, hold Shift (Linux) / Option (macOS)\n"
-        "  while dragging — bypasses Textual's mouse capture.\n\n"
+        "  m toggles mouse capture — turn off, then drag-select and\n"
+        "  copy with your terminal as usual (Cmd+C / Ctrl+Shift+C).\n"
+        "  Shift (Linux) / Option (macOS) + drag also bypasses capture\n"
+        "  without toggling.\n\n"
         "[bold]Accounts[/bold]\n"
         "  a archive (hide) current account\n"
         "  A toggle show-archived\n"
@@ -307,6 +310,7 @@ class MailApp(App[None]):
         Binding("u", "toggle_unread", "Unread"),
         Binding("o", "open_link", "Open link"),
         Binding("y", "copy_body", "Copy body"),
+        Binding("m", "toggle_mouse", "Mouse"),
         Binding("a", "archive_account", "Archive acct"),
         Binding("A", "toggle_show_archived", "Show archived"),
         Binding("g", "refresh", "Refresh"),
@@ -341,6 +345,7 @@ class MailApp(App[None]):
         self.current_folder: str | None = None
         self.current_message: FullMessage | None = None
         self._account_nodes: dict[str, TreeNode] = {}
+        self._mouse_on: bool = True
 
     # ---- layout -----------------------------------------------------
 
@@ -694,6 +699,29 @@ class MailApp(App[None]):
             self.notify("No links found in message", severity="warning")
             return
         self.push_screen(LinksScreen(links), self._open_link_callback)
+
+    def action_toggle_mouse(self) -> None:
+        """Toggle Textual mouse capture so the terminal can do native select/copy."""
+        drv = getattr(self, "_driver", None)
+        if drv is None:
+            self.notify("Driver not ready", severity="warning")
+            return
+        if self._mouse_on:
+            disable = getattr(drv, "_disable_mouse_support", None)
+            if disable is None:
+                self.notify("Driver doesn't support mouse toggle", severity="warning")
+                return
+            disable()
+            self._mouse_on = False
+            self.notify("Mouse off — drag to select, terminal copies natively. m to restore.")
+        else:
+            enable = getattr(drv, "_enable_mouse_support", None)
+            if enable is None:
+                self.notify("Driver doesn't support mouse toggle", severity="warning")
+                return
+            enable()
+            self._mouse_on = True
+            self.notify("Mouse on")
 
     def action_copy_body(self) -> None:
         msg = self.current_message
