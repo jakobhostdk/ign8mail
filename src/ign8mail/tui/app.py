@@ -27,7 +27,7 @@ Keys:
     u               Toggle Unread
     o               Open a link from the current message
     y               Copy message body to clipboard (OSC 52)
-    m               Toggle mouse — turn off to drag-select with the terminal natively
+    m               Toggle mouse capture (off by default; turn on for clicks)
     a               Archive (hide) current account
     A               Toggle show archived
     g               Refresh accounts + folders
@@ -242,11 +242,10 @@ class HelpScreen(ModalScreen[None]):
         "  c compose   r reply   R reply-all   f forward\n"
         "  d delete    u toggle unread   o open link   y copy body\n\n"
         "[bold]Clipboard[/bold]\n"
-        "  y copies the whole body via OSC 52.\n"
-        "  m toggles mouse capture — turn off, then drag-select and\n"
-        "  copy with your terminal as usual (Cmd+C / Ctrl+Shift+C).\n"
-        "  Shift (Linux) / Option (macOS) + drag also bypasses capture\n"
-        "  without toggling.\n\n"
+        "  Mouse capture is OFF by default — just drag-select and copy\n"
+        "  with your terminal (Cmd+C / Ctrl+Shift+C). Press m to turn\n"
+        "  mouse on if you want to click panes/links instead.\n"
+        "  y copies the whole body via OSC 52.\n\n"
         "[bold]Accounts[/bold]\n"
         "  a archive (hide) current account\n"
         "  A toggle show-archived\n"
@@ -345,7 +344,9 @@ class MailApp(App[None]):
         self.current_folder: str | None = None
         self.current_message: FullMessage | None = None
         self._account_nodes: dict[str, TreeNode] = {}
-        self._mouse_on: bool = True
+        # Mouse capture is off by default so drag-select + Cmd+C work in the
+        # host terminal without ceremony. Press `m` to enable click handling.
+        self._mouse_on: bool = False
 
     # ---- layout -----------------------------------------------------
 
@@ -369,6 +370,19 @@ class MailApp(App[None]):
         self.title = f"ign8mail — {self.domain or 'mail reader'}"
         self.refresh_accounts()
         self.set_interval(self.REFRESH_INTERVAL, self.refresh_accounts)
+        self._apply_mouse_state()
+
+    def _apply_mouse_state(self) -> None:
+        drv = getattr(self, "_driver", None)
+        if drv is None:
+            return
+        fn = getattr(
+            drv,
+            "_enable_mouse_support" if self._mouse_on else "_disable_mouse_support",
+            None,
+        )
+        if fn is not None:
+            fn()
 
     # ---- account tree -----------------------------------------------
 
@@ -706,22 +720,17 @@ class MailApp(App[None]):
         if drv is None:
             self.notify("Driver not ready", severity="warning")
             return
+        target = "_enable_mouse_support" if not self._mouse_on else "_disable_mouse_support"
+        fn = getattr(drv, target, None)
+        if fn is None:
+            self.notify("Driver doesn't support mouse toggle", severity="warning")
+            return
+        fn()
+        self._mouse_on = not self._mouse_on
         if self._mouse_on:
-            disable = getattr(drv, "_disable_mouse_support", None)
-            if disable is None:
-                self.notify("Driver doesn't support mouse toggle", severity="warning")
-                return
-            disable()
-            self._mouse_on = False
-            self.notify("Mouse off — drag to select, terminal copies natively. m to restore.")
+            self.notify("Mouse on — click to interact; m to drag-select again")
         else:
-            enable = getattr(drv, "_enable_mouse_support", None)
-            if enable is None:
-                self.notify("Driver doesn't support mouse toggle", severity="warning")
-                return
-            enable()
-            self._mouse_on = True
-            self.notify("Mouse on")
+            self.notify("Mouse off — drag to select, terminal copies natively")
 
     def action_copy_body(self) -> None:
         msg = self.current_message
