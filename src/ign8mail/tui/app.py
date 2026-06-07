@@ -25,6 +25,8 @@ Keys:
     c               Compose new (uses current account)
     d               Delete (move to Trash)
     u               Toggle Unread
+    o               Open a link from the current message
+    y               Copy message body to clipboard (OSC 52)
     a               Archive (hide) current account
     A               Toggle show archived
     g               Refresh accounts + folders
@@ -39,6 +41,7 @@ import os
 import re
 import subprocess
 import tempfile
+import webbrowser
 from email.message import EmailMessage
 from email.utils import getaddresses
 from pathlib import Path
@@ -148,6 +151,75 @@ class ComposeScreen(ModalScreen[EmailMessage | None]):
         self.query_one("#compose-body", Static).update(preview)
 
 
+# --------------------------- links screen -------------------------------
+
+
+class LinksScreen(ModalScreen[str | None]):
+    """Modal list of URLs found in the current message."""
+
+    BINDINGS = [
+        Binding("escape,q", "cancel", "Cancel"),
+        Binding("enter", "open_selected", "Open", show=False),
+        Binding("y", "copy_selected", "Copy URL"),
+    ]
+
+    CSS = """
+    LinksScreen { align: center middle; }
+    #links-box {
+        width: 80%; height: 80%;
+        border: round $primary; background: $surface;
+        padding: 1 2;
+    }
+    #links-status { color: $text-muted; }
+    """
+
+    def __init__(self, links: list[str]) -> None:
+        super().__init__()
+        self._links = links
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="links-box"):
+            yield Label(f"Links ({len(self._links)})")
+            yield ListView(id="links-list")
+            yield Label("Enter open · y copy · Esc cancel", id="links-status")
+
+    def on_mount(self) -> None:
+        view = self.query_one("#links-list", ListView)
+        for i, link in enumerate(self._links, 1):
+            view.append(ListItem(Label(f"{i:>2}. {link}")))
+        if self._links:
+            view.index = 0
+        view.focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_open_selected(self) -> None:
+        view = self.query_one("#links-list", ListView)
+        idx = view.index
+        if idx is None or idx < 0 or idx >= len(self._links):
+            self.dismiss(None)
+            return
+        self.dismiss(self._links[idx])
+
+    def action_copy_selected(self) -> None:
+        view = self.query_one("#links-list", ListView)
+        idx = view.index
+        if idx is None or idx < 0 or idx >= len(self._links):
+            return
+        url = self._links[idx]
+        self.app.copy_to_clipboard(url)
+        self.app.notify(f"Copied {url[:60]}{'…' if len(url) > 60 else ''}")
+
+    @on(ListView.Selected, "#links-list")
+    def on_link_selected(self, event: ListView.Selected) -> None:
+        idx = event.list_view.index
+        if idx is None or idx < 0 or idx >= len(self._links):
+            self.dismiss(None)
+            return
+        self.dismiss(self._links[idx])
+
+
 # --------------------------- help screen --------------------------------
 
 
@@ -167,7 +239,11 @@ class HelpScreen(ModalScreen[None]):
         "  j/↓ next   k/↑ prev   Enter/Space expand-open   Tab cycle pane\n\n"
         "[bold]Mail[/bold]\n"
         "  c compose   r reply   R reply-all   f forward\n"
-        "  d delete    u toggle unread\n\n"
+        "  d delete    u toggle unread   o open link   y copy body\n\n"
+        "[bold]Clipboard[/bold]\n"
+        "  y copies the whole body via OSC 52.\n"
+        "  For partial selection, hold Shift (Linux) / Option (macOS)\n"
+        "  while dragging — bypasses Textual's mouse capture.\n\n"
         "[bold]Accounts[/bold]\n"
         "  a archive (hide) current account\n"
         "  A toggle show-archived\n"
@@ -229,6 +305,8 @@ class MailApp(App[None]):
         Binding("f", "forward", "Forward"),
         Binding("d", "delete", "Delete"),
         Binding("u", "toggle_unread", "Unread"),
+        Binding("o", "open_link", "Open link"),
+        Binding("y", "copy_body", "Copy body"),
         Binding("a", "archive_account", "Archive acct"),
         Binding("A", "toggle_show_archived", "Show archived"),
         Binding("g", "refresh", "Refresh"),
@@ -606,6 +684,40 @@ class MailApp(App[None]):
         self.notify("Deleted.")
         self.load_messages(self.current_account, self.current_folder)
 
+    def action_open_link(self) -> None:
+        msg = self.current_message
+        if not msg:
+            self.notify("No message selected", severity="warning")
+            return
+        links = _extract_links(msg)
+        if not links:
+            self.notify("No links found in message", severity="warning")
+            return
+        self.push_screen(LinksScreen(links), self._open_link_callback)
+
+    def action_copy_body(self) -> None:
+        msg = self.current_message
+        if not msg:
+            self.notify("No message selected", severity="warning")
+            return
+        text = msg.body_text or _html_to_text(msg.body_html) or ""
+        if not text.strip():
+            self.notify("Empty body", severity="warning")
+            return
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        self.copy_to_clipboard(text)
+        self.notify(f"Copied body ({len(text)} chars)")
+
+    def _open_link_callback(self, url: str | None) -> None:
+        if not url:
+            return
+        try:
+            webbrowser.open(url)
+        except Exception as e:
+            self.notify(f"Open failed: {e}", severity="error")
+            return
+        self.notify(f"Opened {url[:60]}{'…' if len(url) > 60 else ''}")
+
     def action_toggle_unread(self) -> None:
         msg = self.current_message
         if not msg or not self.current_account or not self.current_folder:
@@ -714,6 +826,38 @@ def _html_to_text(html: str) -> str:
     text = re.sub(r"</p>", "\n\n", text, flags=re.I)
     text = re.sub(r"<[^>]+>", "", text)
     return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+_URL_RE = re.compile(r'(?:https?://|mailto:)[^\s<>"\'\)\]]+', re.I)
+_HREF_RE = re.compile(r'''href\s*=\s*['"]([^'"]+)['"]''', re.I)
+_URL_TRAIL = '.,;:!?)\'"]>'
+
+
+def _extract_links(msg: FullMessage) -> list[str]:
+    """Return ordered, deduped http(s)/mailto links from the message."""
+    seen: set[str] = set()
+    out: list[str] = []
+
+    def _add(url: str) -> None:
+        url = url.strip().rstrip(_URL_TRAIL)
+        if not url:
+            return
+        low = url.lower()
+        if not (low.startswith("http://") or low.startswith("https://") or low.startswith("mailto:")):
+            return
+        if url in seen:
+            return
+        seen.add(url)
+        out.append(url)
+
+    if msg.body_html:
+        for url in _HREF_RE.findall(msg.body_html):
+            _add(url)
+        for url in _URL_RE.findall(msg.body_html):
+            _add(url)
+    for url in _URL_RE.findall(msg.body_text or ""):
+        _add(url)
+    return out
 
 
 def _quote_body(msg: FullMessage) -> str:

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ign8mail"
-version = "2.1.0"
+version = "2.2.0"
 description = "Spin up a fully configured mail server in minutes — Hetzner Cloud infra, Cloudflare DNS, all from one CLI command."
 readme = "README.md"
 requires-python = ">=3.11"
