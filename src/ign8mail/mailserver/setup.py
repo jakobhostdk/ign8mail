@@ -599,7 +599,7 @@ class MailServerSetup:
         self._exec("mkdir -p /etc/rspamd/dkim")
         sftp = self._ssh.open_sftp()
         try:
-            key_path = f"/etc/rspamd/dkim/{domain}.mail.key"
+            key_path = f"/etc/rspamd/dkim/{domain}.mail2.key"
             sftp.putfo(io.BytesIO(dkim_private_key_pem), key_path)
             dkim_conf = (
                 "enabled = true;\n"
@@ -608,7 +608,7 @@ class MailServerSetup:
                 'use_domain = "header";\n'
                 "use_redis = false;\n"
                 'path = "/etc/rspamd/dkim/$domain.$selector.key";\n'
-                'selector = "mail";\n'
+                'selector = "mail2";\n'
                 "allow_username_mismatch = true;\n"
             )
             sftp.putfo(io.BytesIO(dkim_conf.encode()), "/etc/rspamd/local.d/dkim_signing.conf")
@@ -616,7 +616,7 @@ class MailServerSetup:
             sftp.close()
         self._exec(
             f"chown -R _rspamd:_rspamd /etc/rspamd/dkim && "
-            f"chmod 640 /etc/rspamd/dkim/{domain}.mail.key"
+            f"chmod 640 /etc/rspamd/dkim/{domain}.mail2.key"
         )
         self._exec("systemctl enable rspamd && systemctl restart rspamd")
         self._exec(

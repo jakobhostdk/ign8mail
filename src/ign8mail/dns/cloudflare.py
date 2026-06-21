@@ -25,7 +25,7 @@ class CloudflareDNS:
             # SPF
             {"type": "TXT",  "name": self._domain,           "content": f"v=spf1 mx a:{ipv4} ~all", "ttl": 1},
             # DKIM
-            {"type": "TXT",  "name": f"mail._domainkey.{self._domain}", "content": f"v=DKIM1; k=rsa; p={dkim_public_key}", "ttl": 1},
+            {"type": "TXT",  "name": f"mail2._domainkey.{self._domain}", "content": f"v=DKIM1; k=rsa; p={dkim_public_key}", "ttl": 1},
             # DMARC
             {"type": "TXT",  "name": f"_dmarc.{self._domain}", "content": f"v=DMARC1; p=quarantine; rua=mailto:dmarc@{self._domain}", "ttl": 1},
             # Autodiscover / autoconfig for mail clients

@@ -1589,6 +1589,64 @@ def list_inboxes(
     console.print(table)
 
 
+@app.command(name="list-new")
+def list_new(
+    domain: str = typer.Option("", envvar="IGN8_DOMAIN", help="Mail domain (defaults to IGN8_DOMAIN)"),
+    imap_host: str = typer.Option("", help="IMAP hostname (default: mail.<domain>)"),
+    smtp_host: str = typer.Option("", help="SMTP hostname (default: mail.<domain>)"),
+    no_tui: bool = typer.Option(False, "--no-tui", help="Just print a summary table; skip the reader TUI"),
+) -> None:
+    """Show new (unread) mail across every mailbox, then open a TUI to read them."""
+    if not domain:
+        console.print("[red]Error:[/red] provide --domain or IGN8_DOMAIN.")
+        raise typer.Exit(1)
+    if not _vault.exists():
+        console.print(f"[red]Error:[/red] vault not found at {_vault}.")
+        raise typer.Exit(1)
+
+    imap_host = imap_host or f"mail.{domain}"
+    smtp_host = smtp_host or f"mail.{domain}"
+
+    from ign8mail.tui.app import load_accounts
+    from ign8mail.tui.newmail import NewMailApp, gather_new
+
+    accounts = load_accounts(_vault)
+    if not accounts:
+        console.print("[yellow]No mailboxes in vault.[/yellow]")
+        return
+
+    if no_tui:
+        with console.status(f"Scanning {len(accounts)} mailboxes…"):
+            clients, items, errors = gather_new(accounts, imap_host, domain, smtp_host)
+        for c in clients.values():
+            try:
+                c.close()
+            except Exception:
+                pass
+        if errors:
+            for u, err in sorted(errors.items()):
+                console.print(f"[red]{u}:[/red] {err}")
+        if not items:
+            console.print("[green]Inbox zero across all accounts.[/green]")
+            return
+        table = Table(title=f"New mail ({len(items)})", show_lines=False)
+        table.add_column("Account", style="cyan")
+        table.add_column("From")
+        table.add_column("Subject")
+        table.add_column("Date", style="dim")
+        for it in items:
+            table.add_row(it.username, it.summary.sender, it.summary.subject, it.summary.date)
+        console.print(table)
+        return
+
+    NewMailApp(
+        vault_path=_vault,
+        domain=domain,
+        imap_host=imap_host,
+        smtp_host=smtp_host,
+    ).run()
+
+
 @app.command(name="show-passwords")
 def show_passwords(
     domain: str = typer.Option("", envvar="IGN8_DOMAIN", help="Mail domain — used for display"),

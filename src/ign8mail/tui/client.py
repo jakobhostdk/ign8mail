@@ -153,10 +153,11 @@ class MailClient:
 
     # ---- listing --------------------------------------------------------
 
-    def list_messages(self, folder: str, limit: int = 200) -> list[MessageSummary]:
+    def list_messages(self, folder: str, limit: int = 200, unseen_only: bool = False) -> list[MessageSummary]:
         self.select(folder, readonly=False)
         imap = self._conn()
-        typ, data = imap.uid("SEARCH", None, "ALL")
+        criterion = "UNSEEN" if unseen_only else "ALL"
+        typ, data = imap.uid("SEARCH", None, criterion)
         if typ != "OK" or not data or not data[0]:
             return []
         uids = data[0].split()
