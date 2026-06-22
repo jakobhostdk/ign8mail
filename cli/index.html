@@ -1,0 +1,1934 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Ignite a production-grade mail server in minutes — Hetzner + Cloudflare + Postfix/Dovecot/rspamd">
+      
+      
+      
+        <link rel="canonical" href="https://ign8mail.jakobholst.dk/cli/">
+      
+      
+        <link rel="prev" href="../webmail/">
+      
+      
+        <link rel="next" href="../dns/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>CLI reference - ign8mail</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="pink">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#cli-reference" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="ign8mail" class="md-header__button md-logo" aria-label="ign8mail" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            ign8mail
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              CLI reference
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="pink"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="pink"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/jakobhostdk/ign8mail" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    jakobhostdk/ign8mail
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../quickstart/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Quickstart
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../architecture/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Architecture
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../webmail/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Cooperative webmail
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="./" class="md-tabs__link">
+        
+  
+  
+    
+  
+  CLI reference
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../dns/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  DNS records
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../configuration/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Configuration
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../operations/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Operations
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="ign8mail" class="md-nav__button md-logo" aria-label="ign8mail" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    ign8mail
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/jakobhostdk/ign8mail" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    jakobhostdk/ign8mail
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../webmail/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cooperative webmail
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI reference
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lifecycle
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Lifecycle">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-up" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail up
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-destroy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail destroy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-backup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail backup
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail status
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mailbox-management" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Mailbox management
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Mailbox management">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-create-mailbox-name" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail create-mailbox &lt;name&gt;
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-delete-mailbox-name" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail delete-mailbox &lt;name&gt;
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-adduser-username" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail adduser &lt;username&gt;
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail list
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-list-new" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail list-new
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-show-passwords" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail show-passwords
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-passwd-check" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail passwd-check
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-passwd-recycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail passwd-recycle
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reading-mail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reading mail
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Reading mail">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-read-account" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail read [account]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-webmail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail webmail
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-switch-inbox-account" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail switch-inbox &lt;account&gt;
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-tail-postfix-log" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail tail-postfix-log
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#client-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Client integration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Client integration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-configure-thunderbird-username" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail configure-thunderbird &lt;username&gt;
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-sync-thunderbird" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail sync-thunderbird
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-sync-aerc" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail sync-aerc
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cooperative-webmail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cooperative webmail
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Cooperative webmail">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-user-add-username-p-address" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail user-add &lt;username&gt; [-p &lt;address&gt;]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-configure-sharing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail configure-sharing
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#server-side-extras" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Server-side extras
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Server-side extras">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-configure-nginx" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail configure-nginx
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-configure-dkim" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail configure-dkim
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-deploy-webmail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail deploy-webmail
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-enable-autocreate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail enable-autocreate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-seed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail seed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#auto-created-mailboxes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Auto-created mailboxes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dmarc" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DMARC
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="DMARC">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-dmarc-stats" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail dmarc-stats
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vault-ssh" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Vault &amp; SSH
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Vault &amp; SSH">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-vault-init" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail vault-init
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-ssh" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail ssh
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-checkmail-mail-user-user" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail checkmail --mail-user &lt;user&gt;
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dns/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    DNS records
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lifecycle
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Lifecycle">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-up" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail up
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-destroy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail destroy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-backup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail backup
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail status
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mailbox-management" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Mailbox management
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Mailbox management">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-create-mailbox-name" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail create-mailbox &lt;name&gt;
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-delete-mailbox-name" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail delete-mailbox &lt;name&gt;
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-adduser-username" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail adduser &lt;username&gt;
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail list
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-list-new" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail list-new
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-show-passwords" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail show-passwords
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-passwd-check" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail passwd-check
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-passwd-recycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail passwd-recycle
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reading-mail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reading mail
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Reading mail">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-read-account" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail read [account]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-webmail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail webmail
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-switch-inbox-account" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail switch-inbox &lt;account&gt;
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-tail-postfix-log" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail tail-postfix-log
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#client-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Client integration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Client integration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-configure-thunderbird-username" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail configure-thunderbird &lt;username&gt;
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-sync-thunderbird" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail sync-thunderbird
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-sync-aerc" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail sync-aerc
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cooperative-webmail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cooperative webmail
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Cooperative webmail">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-user-add-username-p-address" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail user-add &lt;username&gt; [-p &lt;address&gt;]
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-configure-sharing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail configure-sharing
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#server-side-extras" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Server-side extras
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Server-side extras">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-configure-nginx" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail configure-nginx
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-configure-dkim" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail configure-dkim
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-deploy-webmail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail deploy-webmail
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-enable-autocreate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail enable-autocreate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-seed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail seed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#auto-created-mailboxes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Auto-created mailboxes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dmarc" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DMARC
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="DMARC">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-dmarc-stats" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail dmarc-stats
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vault-ssh" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Vault &amp; SSH
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Vault &amp; SSH">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-vault-init" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail vault-init
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-ssh" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail ssh
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ign8mail-checkmail-mail-user-user" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ign8mail checkmail --mail-user &lt;user&gt;
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="cli-reference">CLI reference<a class="headerlink" href="#cli-reference" title="Permanent link">&para;</a></h1>
+<p>All commands accept <code>--help</code> for full flag listings. This page summarises every command grouped by purpose.</p>
+<h2 id="lifecycle">Lifecycle<a class="headerlink" href="#lifecycle" title="Permanent link">&para;</a></h2>
+<h3 id="ign8mail-up"><code>ign8mail up</code><a class="headerlink" href="#ign8mail-up" title="Permanent link">&para;</a></h3>
+<p>Provision a complete mail server: Hetzner VM + Cloudflare DNS + Postfix/Dovecot.</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>ign8mail<span class="w"> </span>up<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span>--domain<span class="w"> </span>example.com<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span>--admin-email<span class="w"> </span>admin@example.com<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span>--hetzner-token<span class="w"> </span><span class="nv">$IGN8_HETZNER_TOKEN</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">  </span>--cloudflare-token<span class="w"> </span><span class="nv">$IGN8_CLOUDFLARE_TOKEN</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">  </span>--cloudflare-zone-id<span class="w"> </span><span class="nv">$IGN8_CLOUDFLARE_ZONE_ID</span>
+</span></code></pre></div>
+<p>Idempotent — safe to re-run.</p>
+<h3 id="ign8mail-destroy"><code>ign8mail destroy</code><a class="headerlink" href="#ign8mail-destroy" title="Permanent link">&para;</a></h3>
+<p>Tear down the Hetzner server, saving a backup first. DNS records are left intact.</p>
+<h3 id="ign8mail-backup"><code>ign8mail backup</code><a class="headerlink" href="#ign8mail-backup" title="Permanent link">&para;</a></h3>
+<p>Snapshot server state (users, config) to <code>backup.json</code> without touching the server.</p>
+<h3 id="ign8mail-status"><code>ign8mail status</code><a class="headerlink" href="#ign8mail-status" title="Permanent link">&para;</a></h3>
+<p>Show the current state of the provisioned mail server.</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>ign8mail<span class="w"> </span>status<span class="w"> </span>--check-services<span class="w">        </span><span class="c1"># SSH in, verify postfix/dovecot/rspamd</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>ign8mail<span class="w"> </span>status<span class="w"> </span>--check-mail<span class="w">            </span><span class="c1"># Send a probe email and verify IMAP delivery</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>ign8mail<span class="w"> </span>status<span class="w"> </span>--format<span class="w"> </span>json
+</span></code></pre></div>
+<h2 id="mailbox-management">Mailbox management<a class="headerlink" href="#mailbox-management" title="Permanent link">&para;</a></h2>
+<h3 id="ign8mail-create-mailbox-name"><code>ign8mail create-mailbox &lt;name&gt;</code><a class="headerlink" href="#ign8mail-create-mailbox-name" title="Permanent link">&para;</a></h3>
+<p>Create a mailbox on the running server. Generates a password and stores it in the vault.</p>
+<h3 id="ign8mail-delete-mailbox-name"><code>ign8mail delete-mailbox &lt;name&gt;</code><a class="headerlink" href="#ign8mail-delete-mailbox-name" title="Permanent link">&para;</a></h3>
+<p>Delete a mailbox. Use <code>--purge</code> to also remove the home directory and all mail.</p>
+<h3 id="ign8mail-adduser-username"><code>ign8mail adduser &lt;username&gt;</code><a class="headerlink" href="#ign8mail-adduser-username" title="Permanent link">&para;</a></h3>
+<p>Create a mail user (lower-level alternative to <code>create-mailbox</code>).</p>
+<h3 id="ign8mail-list"><code>ign8mail list</code><a class="headerlink" href="#ign8mail-list" title="Permanent link">&para;</a></h3>
+<p>List known mail inboxes on the running server.</p>
+<h3 id="ign8mail-list-new"><code>ign8mail list-new</code><a class="headerlink" href="#ign8mail-list-new" title="Permanent link">&para;</a></h3>
+<p>Show new (unread) mail across every mailbox, then open the reader TUI. Use <code>--no-tui</code> for a static table.</p>
+<h3 id="ign8mail-show-passwords"><code>ign8mail show-passwords</code><a class="headerlink" href="#ign8mail-show-passwords" title="Permanent link">&para;</a></h3>
+<p>Print every mailbox password from the vault.</p>
+<h3 id="ign8mail-passwd-check"><code>ign8mail passwd-check</code><a class="headerlink" href="#ign8mail-passwd-check" title="Permanent link">&para;</a></h3>
+<p>Probe IMAP login for every account in the vault. Non-destructive.</p>
+<h3 id="ign8mail-passwd-recycle"><code>ign8mail passwd-recycle</code><a class="headerlink" href="#ign8mail-passwd-recycle" title="Permanent link">&para;</a></h3>
+<p>Reset all mail account passwords and rewrite per-mailbox <code>~/.mbsync.&lt;user&gt;</code> profiles.</p>
+<h2 id="reading-mail">Reading mail<a class="headerlink" href="#reading-mail" title="Permanent link">&para;</a></h2>
+<h3 id="ign8mail-read-account"><code>ign8mail read [account]</code><a class="headerlink" href="#ign8mail-read-account" title="Permanent link">&para;</a></h3>
+<p>Open the multi-account TUI reader. Optionally pass an account to focus on launch.</p>
+<h3 id="ign8mail-webmail"><code>ign8mail webmail</code><a class="headerlink" href="#ign8mail-webmail" title="Permanent link">&para;</a></h3>
+<p>Start the bundled Django webmail interface on <code>localhost:8000</code>.</p>
+<h3 id="ign8mail-switch-inbox-account"><code>ign8mail switch-inbox &lt;account&gt;</code><a class="headerlink" href="#ign8mail-switch-inbox-account" title="Permanent link">&para;</a></h3>
+<p>Switch local <code>mbsync</code>/<code>neomutt</code>/<code>msmtp</code> configs to point at a different mailbox.</p>
+<h3 id="ign8mail-tail-postfix-log"><code>ign8mail tail-postfix-log</code><a class="headerlink" href="#ign8mail-tail-postfix-log" title="Permanent link">&para;</a></h3>
+<p>Stream the Postfix log from the running server.</p>
+<h2 id="client-integration">Client integration<a class="headerlink" href="#client-integration" title="Permanent link">&para;</a></h2>
+<h3 id="ign8mail-configure-thunderbird-username"><code>ign8mail configure-thunderbird &lt;username&gt;</code><a class="headerlink" href="#ign8mail-configure-thunderbird-username" title="Permanent link">&para;</a></h3>
+<p>Add an IMAP/SMTP account to your local Thunderbird profile.</p>
+<h3 id="ign8mail-sync-thunderbird"><code>ign8mail sync-thunderbird</code><a class="headerlink" href="#ign8mail-sync-thunderbird" title="Permanent link">&para;</a></h3>
+<p>Add <strong>all</strong> active mailboxes to Thunderbird and store their passwords.</p>
+<h3 id="ign8mail-sync-aerc"><code>ign8mail sync-aerc</code><a class="headerlink" href="#ign8mail-sync-aerc" title="Permanent link">&para;</a></h3>
+<p>Add all active mailboxes to aerc's <code>accounts.conf</code>.</p>
+<h2 id="cooperative-webmail">Cooperative webmail<a class="headerlink" href="#cooperative-webmail" title="Permanent link">&para;</a></h2>
+<p>See <a href="../webmail/">Cooperative webmail</a> for the full model.</p>
+<h3 id="ign8mail-user-add-username-p-address"><code>ign8mail user-add &lt;username&gt; [-p &lt;address&gt;]</code><a class="headerlink" href="#ign8mail-user-add-username-p-address" title="Permanent link">&para;</a></h3>
+<p>Register <em>username</em> as a webmail user. <code>--personal/-p</code> is repeatable; default is <code>&lt;username&gt;@&lt;domain&gt;</code>.</p>
+<h3 id="ign8mail-configure-sharing"><code>ign8mail configure-sharing</code><a class="headerlink" href="#ign8mail-configure-sharing" title="Permanent link">&para;</a></h3>
+<p>Push <code>smtpd_sender_login_maps</code> to the server and turn on <code>reject_sender_login_mismatch</code> on submission (port 587). Re-run after changing <code>users:</code> in the vault.</p>
+<h2 id="server-side-extras">Server-side extras<a class="headerlink" href="#server-side-extras" title="Permanent link">&para;</a></h2>
+<h3 id="ign8mail-configure-nginx"><code>ign8mail configure-nginx</code><a class="headerlink" href="#ign8mail-configure-nginx" title="Permanent link">&para;</a></h3>
+<p>Deploy the landing page and configure nginx on the running server.</p>
+<h3 id="ign8mail-configure-dkim"><code>ign8mail configure-dkim</code><a class="headerlink" href="#ign8mail-configure-dkim" title="Permanent link">&para;</a></h3>
+<p>Upload the DKIM key and configure rspamd signing.</p>
+<h3 id="ign8mail-deploy-webmail"><code>ign8mail deploy-webmail</code><a class="headerlink" href="#ign8mail-deploy-webmail" title="Permanent link">&para;</a></h3>
+<p>Deploy the webmail interface to <code>webmail.&lt;domain&gt;</code> via Cloudflare proxy.</p>
+<h3 id="ign8mail-enable-autocreate"><code>ign8mail enable-autocreate</code><a class="headerlink" href="#ign8mail-enable-autocreate" title="Permanent link">&para;</a></h3>
+<p>Deploy the autocreate policy daemon — accept mail for unknown local-parts and create mailboxes on demand.</p>
+<h3 id="ign8mail-seed"><code>ign8mail seed</code><a class="headerlink" href="#ign8mail-seed" title="Permanent link">&para;</a></h3>
+<p>Send a seed email to each address in <code>mailboxes.yml</code> so the autocreate daemon provisions them.</p>
+<h2 id="auto-created-mailboxes">Auto-created mailboxes<a class="headerlink" href="#auto-created-mailboxes" title="Permanent link">&para;</a></h2>
+<p><code>ign8mail autocreated</code> — manage mailboxes created on-the-fly by the autocreate daemon.</p>
+<table>
+<thead>
+<tr>
+<th>Subcommand</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>autocreated list</code></td>
+<td>List auto-created mailboxes and their status</td>
+</tr>
+<tr>
+<td><code>autocreated sync</code></td>
+<td>Pull new auto-created mailboxes into the vault</td>
+</tr>
+<tr>
+<td><code>autocreated enable &lt;name&gt;</code></td>
+<td>Mark mailbox as kept</td>
+</tr>
+<tr>
+<td><code>autocreated disable &lt;name&gt;</code></td>
+<td>Stop accepting new mail (existing mail kept)</td>
+</tr>
+<tr>
+<td><code>autocreated silence &lt;name&gt;</code></td>
+<td>Delete mailbox and block future creation</td>
+</tr>
+</tbody>
+</table>
+<h2 id="dmarc">DMARC<a class="headerlink" href="#dmarc" title="Permanent link">&para;</a></h2>
+<h3 id="ign8mail-dmarc-stats"><code>ign8mail dmarc-stats</code><a class="headerlink" href="#ign8mail-dmarc-stats" title="Permanent link">&para;</a></h3>
+<p>Fetch and display DMARC aggregate report statistics.</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>ign8mail<span class="w"> </span>dmarc-stats<span class="w"> </span>--delete<span class="w">   </span><span class="c1"># also delete parsed report emails</span>
+</span></code></pre></div>
+<h2 id="vault-ssh">Vault &amp; SSH<a class="headerlink" href="#vault-ssh" title="Permanent link">&para;</a></h2>
+<h3 id="ign8mail-vault-init"><code>ign8mail vault-init</code><a class="headerlink" href="#ign8mail-vault-init" title="Permanent link">&para;</a></h3>
+<p>Create <code>.ign8mail/vault.yml</code> from current <code>IGN8_*</code> environment variables.</p>
+<h3 id="ign8mail-ssh"><code>ign8mail ssh</code><a class="headerlink" href="#ign8mail-ssh" title="Permanent link">&para;</a></h3>
+<p>Open an interactive SSH session to the provisioned server.</p>
+<h3 id="ign8mail-checkmail-mail-user-user"><code>ign8mail checkmail --mail-user &lt;user&gt;</code><a class="headerlink" href="#ign8mail-checkmail-mail-user-user" title="Permanent link">&para;</a></h3>
+<p>Send a test email and verify IMAP delivery for a single mailbox. Use <code>--fix</code> to attempt repairs.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../webmail/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Cooperative webmail">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Cooperative webmail
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../dns/" class="md-footer__link md-footer__link--next" aria-label="Next: DNS records">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                DNS records
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Copyright &copy; Jakob Holst
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/jakobholst/ign8mail" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://pypi.org/project/ign8mail/" target="_blank" rel="noopener" title="pypi.org" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.8 200.5c-7.7-30.9-22.3-54.2-53.4-54.2h-40.1v47.4c0 36.8-31.2 67.8-66.8 67.8H172.7c-29.2 0-53.4 25-53.4 54.3v101.8c0 29 25.2 46 53.4 54.3 33.8 9.9 66.3 11.7 106.8 0 26.9-7.8 53.4-23.5 53.4-54.3v-40.7H226.2v-13.6h160.2c31.1 0 42.6-21.7 53.4-54.2 11.2-33.5 10.7-65.7 0-108.6M286.2 444.7a20.4 20.4 0 1 1 0-40.7 20.4 20.4 0 1 1 0 40.7M167.8 248.1h106.8c29.7 0 53.4-24.5 53.4-54.3V91.9c0-29-24.4-50.7-53.4-55.6-35.8-5.9-74.7-5.6-106.8.1-45.2 8-53.4 24.7-53.4 55.6v40.7h106.9v13.6h-147c-31.1 0-58.3 18.7-66.8 54.2-9.8 40.7-10.2 66.1 0 108.6 7.6 31.6 25.7 54.2 56.8 54.2H101v-48.8c0-35.3 30.5-66.4 66.8-66.4m-6.6-183.4a20.4 20.4 0 1 1 0 40.8 20.4 20.4 0 1 1 0-40.8"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "navigation.sections", "navigation.top", "navigation.footer", "content.code.copy", "content.code.annotate", "search.suggest", "search.highlight", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

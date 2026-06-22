@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+         <loc>https://ign8mail.jakobholst.dk/</loc>
+         <lastmod>2026-06-22</lastmod>
+    </url>
+    <url>
+         <loc>https://ign8mail.jakobholst.dk/architecture/</loc>
+         <lastmod>2026-06-22</lastmod>
+    </url>
+    <url>
+         <loc>https://ign8mail.jakobholst.dk/cli/</loc>
+         <lastmod>2026-06-22</lastmod>
+    </url>
+    <url>
+         <loc>https://ign8mail.jakobholst.dk/configuration/</loc>
+         <lastmod>2026-06-22</lastmod>
+    </url>
+    <url>
+         <loc>https://ign8mail.jakobholst.dk/dns/</loc>
+         <lastmod>2026-06-22</lastmod>
+    </url>
+    <url>
+         <loc>https://ign8mail.jakobholst.dk/operations/</loc>
+         <lastmod>2026-06-22</lastmod>
+    </url>
+    <url>
+         <loc>https://ign8mail.jakobholst.dk/quickstart/</loc>
+         <lastmod>2026-06-22</lastmod>
+    </url>
+    <url>
+         <loc>https://ign8mail.jakobholst.dk/webmail/</loc>
+         <lastmod>2026-06-22</lastmod>
+    </url>
+</urlset>
