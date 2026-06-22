@@ -280,12 +280,14 @@ if not settings.configured:
         ROOT_URLCONF='ign8mail.webmail.urls',
         WEBMAIL_DOMAIN=_d['domain'],
         WEBMAIL_IMAP_HOST=_d['imap_host'],
+        WEBMAIL_SMTP_HOST=_d.get('smtp_host') or _d['imap_host'],
         WEBMAIL_PASSWORDS=_d['passwords'],
         WEBMAIL_AUTOCREATED=_d.get('autocreated', {}),
-        WEBMAIL_WORK_DIR='/etc/ign8mail',
+        WEBMAIL_USERS=_d.get('users', {}),
+        WEBMAIL_WORK_DIR='/var/lib/ign8mail',
         WEBMAIL_VAULT_PATH='/etc/ign8mail/webmail.json',
+        WEBMAIL_OVERLAY_DB='/var/lib/ign8mail/seen.db',
         WEBMAIL_SERVER_MODE=True,
-        WEBMAIL_ADMIN_PASSWORD=_d.get('admin_password', ''),
     )
 import django; django.setup()
 from django.core.wsgi import get_wsgi_application
@@ -720,7 +722,7 @@ class MailServerSetup:
         key_pem: bytes,
         passwords: dict[str, str],
         autocreated: dict[str, dict[str, str]],
-        admin_password: str = "",
+        users: dict[str, dict] | None = None,
     ) -> None:
         """Build, upload, and start the webmail interface on the server."""
         import subprocess
@@ -745,7 +747,7 @@ class MailServerSetup:
             wheel_path = wheels[0]
 
             self._exec("apt-get install -y -qq python3-pip")
-            self._exec("mkdir -p /opt/ign8mail-webmail /etc/ign8mail")
+            self._exec("mkdir -p /opt/ign8mail-webmail /etc/ign8mail /var/lib/ign8mail")
 
             sftp = self._ssh.open_sftp()
             try:
@@ -754,9 +756,10 @@ class MailServerSetup:
                 config: dict[str, object] = {
                     "domain": domain,
                     "imap_host": f"mail.{domain}",
+                    "smtp_host": f"mail.{domain}",
                     "passwords": passwords,
                     "autocreated": autocreated,
-                    "admin_password": admin_password,
+                    "users": users or {},
                     "secret_key": _secrets.token_hex(32),
                 }
                 sftp.putfo(

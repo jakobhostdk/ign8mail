@@ -833,10 +833,12 @@ def deploy_webmail(
     cloudflare_token: str = typer.Option(..., envvar="IGN8_CLOUDFLARE_TOKEN", help="Cloudflare API token"),
     cloudflare_zone_id: str = typer.Option(..., envvar="IGN8_CLOUDFLARE_ZONE_ID", help="Cloudflare Zone ID"),
     cloudflare_email: str = typer.Option("", envvar="IGN8_CLOUDFLARE_EMAIL", help="Cloudflare account email (only for Global API Key auth)"),
-    admin_password: str = typer.Option("", envvar="IGN8_WEBMAIL_PASSWORD", help="Webmail admin password (generated if omitted)"),
     work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
 ) -> None:
-    """Deploy the webmail interface to webmail.<domain> via Cloudflare proxy."""
+    """Deploy the cooperative webmail interface to webmail.<domain> via Cloudflare proxy.
+
+    Requires at least one user registered via `ign8mail user-add`.
+    """
     state_path = work_dir / "state.json"
     if not state_path.exists():
         console.print("[red]Error:[/red] No state file found — run `ign8mail up` first.")
@@ -859,10 +861,14 @@ def deploy_webmail(
     vault_data = vault.load(_vault)
     passwords: dict[str, str] = vault_data.get("mailbox_passwords") or {}
     autocreated: dict = vault_data.get("autocreated_mailboxes") or {}
+    users: dict = vault_data.get("users") or {}
 
-    if not admin_password:
-        admin_password = secrets.token_urlsafe(16)
-        console.print(f"    [dim]Generated webmail password: [bold]{admin_password}[/bold][/dim]")
+    if not users:
+        console.print(
+            "[red]Error:[/red] No webmail users registered. "
+            "Run [bold]ign8mail user-add <username>[/bold] first."
+        )
+        raise typer.Exit(1)
 
     console.print(f"[1/3] Adding webmail.{domain} DNS record and generating origin cert...")
     dns = CloudflareDNS(cloudflare_token, cloudflare_zone_id, domain, cloudflare_email)
@@ -887,15 +893,16 @@ def deploy_webmail(
     setup.connect(retries=3, delay=5)
     try:
         console.print("[3/3] Installing dependencies and starting webmail service...")
-        setup.deploy_webmail(domain, cert_pem, key_pem, passwords, autocreated, admin_password)
+        setup.deploy_webmail(domain, cert_pem, key_pem, passwords, autocreated, users)
     finally:
         setup.disconnect()
 
     ssl_mode = "Full (strict)" if origin_cert_used else "Full"
     console.print(Panel(
-        f"URL:      [bold]https://webmail.{domain}[/bold]\n"
-        f"Password: [bold yellow]{admin_password}[/bold yellow]\n"
-        f"Cert:     {'Cloudflare origin' if origin_cert_used else 'self-signed'}\n\n"
+        f"URL:    [bold]https://webmail.{domain}[/bold]\n"
+        f"Users:  [bold yellow]{', '.join(sorted(users.keys()))}[/bold yellow] "
+        f"(log in with IMAP credentials)\n"
+        f"Cert:   {'Cloudflare origin' if origin_cert_used else 'self-signed'}\n\n"
         f"[dim]Cloudflare → SSL/TLS → set mode to \"{ssl_mode}\"[/dim]",
         title="[bold green]Webmail deployed[/bold green]",
     ))
