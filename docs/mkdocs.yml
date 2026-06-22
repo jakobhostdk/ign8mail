@@ -1,8 +1,8 @@
 site_name: ign8mail
 site_description: Ignite a production-grade mail server in minutes — Hetzner + Cloudflare + Postfix/Dovecot/rspamd
 site_url: https://ign8mail.jakobholst.dk/
-repo_url: https://github.com/jakobholst/ign8mail
-repo_name: jakobholst/ign8mail
+repo_url: https://github.com/jakobhostdk/ign8mail
+repo_name: jakobhostdk/ign8mail
 copyright: Copyright &copy; Jakob Holst
 
 theme:
