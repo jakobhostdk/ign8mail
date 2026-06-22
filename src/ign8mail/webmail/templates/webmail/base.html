@@ -54,31 +54,47 @@
       text-decoration: none;
     }
     .topbar-logo span { color: var(--flame); }
-    .topbar-domain {
+    .topbar-domain { font-family: var(--mono); font-size: 0.72rem; color: var(--muted); }
+    .topbar-user {
       font-family: var(--mono);
-      font-size: 0.72rem;
-      color: var(--muted);
+      font-size: 0.75rem;
+      color: var(--text);
+      margin-left: auto;
+      display: flex; align-items: center; gap: 0.85rem;
     }
+    .topbar-user .username { color: var(--accent); }
+    .topbar-user a { color: var(--muted); text-decoration: none; transition: color 0.1s; }
+    .topbar-user a:hover { color: var(--text); }
+
+    /* ── Compose CTA ── */
+    .compose-btn {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 0.35rem 0.85rem;
+      font-size: 0.78rem;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      font-family: var(--sans);
+      transition: opacity 0.1s;
+    }
+    .compose-btn:hover { opacity: 0.9; }
 
     /* ── Shell ── */
-    .shell {
-      display: flex;
-      flex: 1;
-      overflow: hidden;
-    }
+    .shell { display: flex; flex: 1; overflow: hidden; }
 
     /* ── Sidebar ── */
     .sidebar {
-      width: 240px;
-      flex-shrink: 0;
+      width: 240px; flex-shrink: 0;
       background: var(--surface);
       border-right: 1px solid var(--border);
-      display: flex;
-      flex-direction: column;
+      display: flex; flex-direction: column;
       overflow-y: auto;
     }
     .sidebar-head {
-      padding: 0.75rem 1rem 0.5rem;
+      padding: 0.85rem 1rem 0.5rem;
       font-size: 0.68rem;
       font-weight: 600;
       letter-spacing: 0.1em;
@@ -111,23 +127,15 @@
     }
     .mb-badge.zero { background: transparent; color: var(--muted); }
     .mb-badge.error { background: var(--border2); color: var(--muted); }
-    .status-dot {
-      width: 6px; height: 6px;
-      border-radius: 50%;
-      flex-shrink: 0;
-    }
+    .status-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
     .dot-active { background: var(--green); }
     .dot-pending { background: var(--yellow); }
     .dot-disabled { background: var(--muted); }
     .dot-autocreated { background: var(--accent); }
+    .dot-personal { background: var(--flame); }
 
     /* ── Main ── */
-    .main {
-      flex: 1;
-      overflow-y: auto;
-      display: flex;
-      flex-direction: column;
-    }
+    .main { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
 
     /* ── Shared components ── */
     .page-header {
@@ -152,6 +160,8 @@
     .tag-active { background: rgba(34,197,94,.12); color: var(--green); }
     .tag-disabled { background: var(--border2); color: var(--muted); }
     .tag-autocreated { background: var(--accent-dim); color: var(--accent); }
+    .tag-shared { background: var(--accent-dim); color: var(--accent); }
+    .tag-personal { background: rgba(249,115,22,.12); color: var(--flame); }
 
     /* ── Action buttons ── */
     .btn {
@@ -178,17 +188,25 @@
 </head>
 <body>
 <div class="topbar">
-  <a class="topbar-logo" href="/">ign<span>8</span>mail</a>
+  <a class="topbar-logo" href="{% url 'index' %}">ign<span>8</span>mail</a>
   <span class="topbar-domain">@{{ domain }}</span>
-  <a href="{% url 'logout' %}" style="margin-left:auto;font-size:0.75rem;color:var(--muted);text-decoration:none;" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--muted)'">sign out</a>
+  <div class="topbar-user">
+    <a href="{% url 'compose' %}" class="compose-btn">＋ Compose</a>
+    <span class="username">{{ user }}</span>
+    <a href="{% url 'logout' %}">sign out</a>
+  </div>
 </div>
 <div class="shell">
   <nav class="sidebar">
+    <a class="mb-item {% if active_mailbox == '' %}active{% endif %}" href="{% url 'index' %}">
+      <span class="status-dot dot-active"></span>
+      <span class="mb-name"><strong>All mail</strong></span>
+    </a>
     <div class="sidebar-head">Mailboxes</div>
     {% for mb in sidebar_mailboxes %}
     <a class="mb-item {% if mb.name == active_mailbox %}active{% endif %} {% if mb.status == 'disabled' %}disabled{% endif %}"
        href="{% url 'mailbox' mb.name %}">
-      <span class="status-dot {% if mb.status == 'pending' or mb.status == 'enabled' %}dot-pending{% elif mb.status == 'disabled' %}dot-disabled{% elif mb.is_autocreated %}dot-autocreated{% else %}dot-active{% endif %}"></span>
+      <span class="status-dot {% if not mb.shared %}dot-personal{% elif mb.status == 'pending' or mb.status == 'enabled' %}dot-pending{% elif mb.status == 'disabled' %}dot-disabled{% elif mb.is_autocreated %}dot-autocreated{% else %}dot-active{% endif %}"></span>
       <span class="mb-name">{{ mb.name }}</span>
       {% if not mb.reachable %}
         <span class="mb-badge error">?</span>

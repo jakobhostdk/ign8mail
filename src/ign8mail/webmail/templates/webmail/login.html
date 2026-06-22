@@ -42,10 +42,17 @@
       font-size: 1.1rem;
       font-weight: 700;
       letter-spacing: -0.02em;
-      margin-bottom: 1.75rem;
+      margin-bottom: 0.4rem;
       text-align: center;
     }
     .logo span { color: var(--flame); }
+    .sub {
+      text-align: center;
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-bottom: 1.75rem;
+      font-family: var(--mono);
+    }
     label {
       display: block;
       font-size: 0.72rem;
@@ -54,8 +61,10 @@
       text-transform: uppercase;
       color: var(--muted);
       margin-bottom: 0.4rem;
+      margin-top: 0.85rem;
     }
-    input[type="password"] {
+    label:first-of-type { margin-top: 0; }
+    input {
       width: 100%;
       background: var(--bg);
       border: 1px solid var(--border2);
@@ -67,11 +76,11 @@
       outline: none;
       transition: border-color 0.15s;
     }
-    input[type="password"]:focus { border-color: var(--accent); }
+    input:focus { border-color: var(--accent); }
     .error {
       font-size: 0.78rem;
       color: var(--red);
-      margin-top: 0.5rem;
+      margin-top: 0.85rem;
       min-height: 1.1rem;
     }
     button {
@@ -94,10 +103,13 @@
 <body>
   <div class="card">
     <div class="logo">ign<span>8</span>mail</div>
+    <div class="sub">@{{ domain }}</div>
     <form method="post">
       {% csrf_token %}
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" autofocus autocomplete="username" autocapitalize="off" spellcheck="false">
       <label for="password">Password</label>
-      <input id="password" name="password" type="password" autofocus autocomplete="current-password">
+      <input id="password" name="password" type="password" autocomplete="current-password">
       <div class="error">{{ error }}</div>
       <button type="submit">Sign in</button>
     </form>

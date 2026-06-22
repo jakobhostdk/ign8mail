@@ -103,6 +103,18 @@ Add **all** active mailboxes to Thunderbird and store their passwords.
 
 Add all active mailboxes to aerc's `accounts.conf`.
 
+## Cooperative webmail
+
+See [Cooperative webmail](webmail.md) for the full model.
+
+### `ign8mail user-add <username> [-p <address>]`
+
+Register *username* as a webmail user. `--personal/-p` is repeatable; default is `<username>@<domain>`.
+
+### `ign8mail configure-sharing`
+
+Push `smtpd_sender_login_maps` to the server and turn on `reject_sender_login_mismatch` on submission (port 587). Re-run after changing `users:` in the vault.
+
 ## Server-side extras
 
 ### `ign8mail configure-nginx`

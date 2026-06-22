@@ -627,6 +627,62 @@ class MailServerSetup:
         )
         self._exec("systemctl reload postfix")
 
+    def configure_send_as(self, sender_login_map: dict[str, list[str]]) -> None:
+        """Push smtpd_sender_login_maps and require sender↔login match on submission (587).
+
+        Port 25 (MTA-to-MTA) keeps default behavior so external mail still arrives.
+        """
+        assert self._ssh, "Call connect() first"
+        lines = [
+            f"{addr} {','.join(sorted(set(users)))}"
+            for addr, users in sorted(sender_login_map.items())
+            if users
+        ]
+        content = "\n".join(lines) + "\n"
+
+        sftp = self._ssh.open_sftp()
+        try:
+            sftp.putfo(io.BytesIO(content.encode()), "/etc/postfix/sender_login_maps")
+        finally:
+            sftp.close()
+        self._exec("postmap /etc/postfix/sender_login_maps")
+        self._exec(
+            "postconf -e 'smtpd_sender_login_maps = hash:/etc/postfix/sender_login_maps'"
+        )
+
+        script = (
+            "python3 - <<'PY'\n"
+            "from pathlib import Path\n"
+            "p = Path('/etc/postfix/master.cf')\n"
+            "src = p.read_text().splitlines()\n"
+            "wanted = [\n"
+            "  '  -o syslog_name=postfix/submission',\n"
+            "  '  -o smtpd_tls_security_level=encrypt',\n"
+            "  '  -o smtpd_sasl_auth_enable=yes',\n"
+            "  '  -o smtpd_tls_auth_only=yes',\n"
+            "  '  -o smtpd_sender_login_maps=hash:/etc/postfix/sender_login_maps',\n"
+            "  '  -o smtpd_sender_restrictions=reject_sender_login_mismatch,permit_sasl_authenticated,reject',\n"
+            "  '  -o smtpd_recipient_restrictions=permit_sasl_authenticated,reject',\n"
+            "]\n"
+            "out, in_sub = [], False\n"
+            "for line in src:\n"
+            "    if line.lstrip().startswith('submission inet'):\n"
+            "        in_sub = True\n"
+            "        out.append(line.lstrip('#'))\n"
+            "        out.extend(wanted)\n"
+            "        continue\n"
+            "    if in_sub:\n"
+            "        if line.startswith(('  -o', '  #-o')):\n"
+            "            continue\n"
+            "        if line and not line.startswith((' ', '\\t')):\n"
+            "            in_sub = False\n"
+            "    out.append(line)\n"
+            "p.write_text('\\n'.join(out) + '\\n')\n"
+            "PY"
+        )
+        self._exec(script)
+        self._exec("systemctl reload postfix")
+
     def enable_autocreate(self) -> None:
         """Deploy the policy daemon and wire it into Postfix recipient checks."""
         assert self._ssh, "Call connect() first"

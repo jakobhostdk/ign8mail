@@ -1,81 +1,82 @@
 {% extends "webmail/base.html" %}
 
-{% block title %}ign8mail — Inbox{% endblock %}
+{% block title %}All mail — ign8mail{% endblock %}
 
 {% block extra_css %}
 <style>
-  .grid {
+  .msg-row {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    grid-template-columns: 9rem 1fr 2.2fr auto;
+    align-items: center;
     gap: 1rem;
-    padding: 1.25rem;
-  }
-  .card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 1rem;
+    padding: 0.6rem 1.5rem;
+    border-bottom: 1px solid var(--border);
     text-decoration: none;
     color: var(--text);
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-    transition: border-color 0.15s, background 0.15s;
+    transition: background 0.1s;
   }
-  .card:hover { border-color: var(--border2); background: var(--surface2); }
-  .card-top {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-  .card-name {
+  .msg-row:hover { background: var(--surface2); }
+  .msg-row.unread { font-weight: 600; }
+  .msg-row:not(.unread) { color: var(--muted2); }
+  .mb-pill {
     font-family: var(--mono);
-    font-size: 0.85rem;
-    font-weight: 600;
-    flex: 1;
+    font-size: 0.7rem;
+    padding: 2px 7px;
+    border-radius: 4px;
+    background: var(--surface2);
+    color: var(--muted);
+    border: 1px solid var(--border);
+    text-align: center;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .card-count {
-    font-size: 1.4rem;
-    font-weight: 700;
-    color: var(--accent);
-    line-height: 1;
+  .mb-pill.personal { color: var(--flame); border-color: rgba(249,115,22,.3); }
+  .mb-pill.shared { color: var(--accent); border-color: rgba(59,130,246,.3); }
+  .msg-from, .msg-subject {
+    font-size: 0.82rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .card-count.zero { color: var(--muted); font-size: 1rem; font-weight: 400; }
-  .card-count.err { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
-  .card-label {
-    font-size: 0.7rem;
+  .msg-date {
+    font-size: 0.72rem;
     color: var(--muted);
+    white-space: nowrap;
+    font-family: var(--mono);
   }
+  .unseen-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    flex-shrink: 0;
+    display: inline-block;
+    margin-right: 0.4rem;
+  }
+  .empty { padding: 2rem 1.5rem; color: var(--muted); font-size: 0.85rem; }
 </style>
 {% endblock %}
 
 {% block content %}
 <div class="page-header">
-  <h1>All mailboxes</h1>
-  <span class="sub">{{ domain }}</span>
+  <h1>All mail</h1>
+  <span class="sub">{{ rows|length }} recent message{{ rows|length|pluralize }}</span>
 </div>
-<div class="grid">
-  {% for mb in mailboxes %}
-  <a class="card" href="{% url 'mailbox' mb.name %}">
-    <div class="card-top">
-      <span class="status-dot {% if mb.status == 'pending' or mb.status == 'enabled' %}dot-pending{% elif mb.status == 'disabled' %}dot-disabled{% elif mb.is_autocreated %}dot-autocreated{% else %}dot-active{% endif %}"></span>
-      <span class="card-name">{{ mb.name }}</span>
-      {% if mb.status != 'active' %}<span class="tag tag-{{ mb.status }}">{{ mb.status }}</span>{% endif %}
-    </div>
-    {% if not mb.reachable %}
-      <div class="card-count err">unreachable</div>
-    {% elif mb.unread > 0 %}
-      <div class="card-count">{{ mb.unread }}</div>
-      <div class="card-label">unread</div>
-    {% else %}
-      <div class="card-count zero">no new mail</div>
-    {% endif %}
+{% if rows %}
+<div>
+  {% for row in rows %}
+  <a class="msg-row {% if not row.seen %}unread{% endif %}"
+     href="{% url 'message' row.mailbox row.uid %}">
+    <span class="mb-pill {% if row.shared %}shared{% else %}personal{% endif %}">{{ row.mailbox }}</span>
+    <span class="msg-from">
+      {% if not row.seen %}<span class="unseen-dot"></span>{% endif %}{{ row.sender }}
+    </span>
+    <span class="msg-subject">{{ row.subject }}</span>
+    <span class="msg-date">{{ row.date }}</span>
   </a>
-  {% empty %}
-  <p style="color:var(--muted);padding:1rem">No mailboxes configured.</p>
   {% endfor %}
 </div>
+{% else %}
+<div class="empty">No messages.</div>
+{% endif %}
 {% endblock %}

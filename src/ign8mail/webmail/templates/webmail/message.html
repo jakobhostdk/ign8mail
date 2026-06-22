@@ -28,6 +28,12 @@
     color: var(--muted2);
     font-weight: 500;
   }
+  .msg-actions {
+    padding: 0.75rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    gap: 0.5rem;
+  }
   .msg-body {
     flex: 1;
     padding: 1.25rem 1.5rem;
@@ -70,6 +76,9 @@
     <span class="meta-item"><strong>To</strong> {{ email }}</span>
     <span class="meta-item"><strong>Date</strong> {{ msg.date }}</span>
   </div>
+</div>
+<div class="msg-actions">
+  <a class="btn" href="{% url 'compose' %}?to={{ msg.sender|urlencode }}&subject=Re: {{ msg.subject|urlencode }}&reply_from={{ email }}">Reply</a>
 </div>
 <div class="msg-body">
   {% if msg.body_html %}

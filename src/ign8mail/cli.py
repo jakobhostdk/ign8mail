@@ -939,6 +939,70 @@ def enable_autocreate(
     console.print("[green]Autocreate policy daemon deployed and Postfix updated.[/green]")
 
 
+@app.command(name="user-add")
+def user_add(
+    username: str = typer.Argument(..., help="Linux/IMAP username (must already have a mailbox)"),
+    personal: list[str] = typer.Option(
+        [],
+        "--personal",
+        "-p",
+        help="Personal address — repeatable. Defaults to <username>@<domain>",
+    ),
+    domain: str = typer.Option("", envvar="IGN8_DOMAIN", help="Mail domain"),
+) -> None:
+    """Register *username* as a webmail user with given personal addresses.
+
+    Personal addresses are owner-only in the webmail; everything else in
+    `mailbox_passwords` is treated as a shared mailbox.
+    """
+    if not domain and not personal:
+        console.print("[red]Error:[/red] --personal or IGN8_DOMAIN required.")
+        raise typer.Exit(1)
+
+    addresses = personal or [f"{username}@{domain}"]
+    data = vault.load(_vault) if _vault.exists() else {}
+    if username not in (data.get("mailbox_passwords") or {}):
+        console.print(
+            f"[yellow]Warning:[/yellow] {username} has no mailbox_passwords entry. "
+            f"Create the mailbox first with `ign8mail create-mailbox {username}`."
+        )
+    vault.add_user(data, username, addresses)
+    vault.save(data, _vault)
+    console.print(
+        f"[green]Registered[/green] {username} → personal: {', '.join(sorted(addresses))}"
+    )
+
+
+@app.command(name="configure-sharing")
+def configure_sharing(
+    domain: str = typer.Option(..., envvar="IGN8_DOMAIN", help="Mail domain"),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+) -> None:
+    """Push the cooperative-webmail Postfix config (sender_login_maps + submission rules)."""
+    if not _vault.exists():
+        console.print(f"[red]Error:[/red] vault not found at {_vault}.")
+        raise typer.Exit(1)
+    data = vault.load(_vault)
+    users = vault.list_users(data)
+    if not users:
+        console.print("[red]Error:[/red] No users registered. Run `ign8mail user-add <name>` first.")
+        raise typer.Exit(1)
+
+    login_map = vault.sender_login_map(data, domain)
+    ipv4, priv_key = _autocreated_setup(work_dir)
+    setup = _make_setup(ipv4, priv_key)
+    setup.connect(retries=3, delay=5)
+    try:
+        setup.configure_send_as(login_map)
+    finally:
+        setup.disconnect()
+
+    console.print(
+        f"[green]Pushed[/green] sender_login_maps "
+        f"({len(login_map)} addresses, {len(users)} users)."
+    )
+
+
 @app.command()
 def seed(
     domain: str = typer.Option(..., envvar="IGN8_DOMAIN", help="Mail domain"),
@@ -2130,10 +2194,14 @@ def webmail(
     domain: str = typer.Option(..., envvar="IGN8_DOMAIN", help="Mail domain"),
     imap_host: str = typer.Option("", help="IMAP hostname (default: mail.<domain>)"),
     port: int = typer.Option(8000, help="Local port to serve on"),
-    admin_password: str = typer.Option("", envvar="IGN8_WEBMAIL_PASSWORD", help="Webmail password (prompted if omitted)"),
     work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
 ) -> None:
-    """Start the webmail interface in a local browser."""
+    """Start the cooperative webmail interface in a local browser.
+
+    Each user logs in with their IMAP username + password. Personal mailboxes
+    are owner-only; everything else is shared across registered users.
+    Register users with `ign8mail user-add <name>` first.
+    """
     host = imap_host or f"mail.{domain}"
 
     if not _vault.exists():
@@ -2143,13 +2211,17 @@ def webmail(
     vault_data = vault.load(_vault)
     passwords: dict[str, str] = vault_data.get("mailbox_passwords") or {}
     autocreated: dict = vault_data.get("autocreated_mailboxes") or {}
+    users: dict = vault_data.get("users") or {}
 
     if not passwords:
         console.print("[yellow]No mailbox passwords in vault — add mailboxes first.[/yellow]")
         raise typer.Exit(1)
-
-    if not admin_password:
-        admin_password = typer.prompt("Webmail password", hide_input=True)
+    if not users:
+        console.print(
+            "[red]Error:[/red] No webmail users registered. "
+            "Run [bold]ign8mail user-add <username>[/bold] first."
+        )
+        raise typer.Exit(1)
 
     console.print(
         f"Starting webmail on [bold]http://127.0.0.1:{port}[/bold] — press Ctrl+C to stop."
@@ -2161,9 +2233,9 @@ def webmail(
         imap_host=host,
         passwords=passwords,
         autocreated=autocreated,
+        users=users,
         work_dir=work_dir,
         vault_path=_vault,
-        admin_password=admin_password,
         port=port,
     )
 

@@ -52,3 +52,83 @@ def get_mailbox_password(username: str, vault_path: Path) -> str:
         data.setdefault("mailbox_passwords", {})[username] = pw
         save(data, vault_path)
     return str(pw)
+
+
+# ---- Cooperative webmail: users + personal/shared address model -----------
+#
+# A "user" is a Linux/IMAP account that can log in to the webmail. Each user
+# owns one or more *personal* addresses (default: <username>@<domain>) that
+# only they can read and send from. Every other mailbox in `mailbox_passwords`
+# is *shared* — visible to all registered users via the webmail.
+
+
+def list_users(data: dict[str, Any]) -> list[str]:
+    """Return registered webmail usernames (Linux accounts)."""
+    return sorted((data.get("users") or {}).keys())
+
+
+def personal_addresses(data: dict[str, Any], username: str) -> list[str]:
+    user = (data.get("users") or {}).get(username) or {}
+    return list(user.get("personal_addresses") or [])
+
+
+def all_personal_addresses(data: dict[str, Any]) -> set[str]:
+    addrs: set[str] = set()
+    for u in (data.get("users") or {}).values():
+        addrs.update(u.get("personal_addresses") or [])
+    return addrs
+
+
+def address_owner(data: dict[str, Any], address: str) -> str | None:
+    """Return the user that owns *address* personally, or None if shared/unknown."""
+    for username, u in (data.get("users") or {}).items():
+        if address in (u.get("personal_addresses") or []):
+            return str(username)
+    return None
+
+
+def shared_local_parts(data: dict[str, Any]) -> list[str]:
+    """Mailbox local-parts that are NOT in anyone's personal_addresses."""
+    personal_locals = {addr.split("@", 1)[0] for addr in all_personal_addresses(data)}
+    mailboxes = (data.get("mailbox_passwords") or {}).keys()
+    return sorted(m for m in mailboxes if m not in personal_locals)
+
+
+def is_shared_local(data: dict[str, Any], local_part: str) -> bool:
+    personal_locals = {addr.split("@", 1)[0] for addr in all_personal_addresses(data)}
+    return local_part in (data.get("mailbox_passwords") or {}) and local_part not in personal_locals
+
+
+def visible_local_parts(data: dict[str, Any], username: str) -> list[str]:
+    """Mailboxes the webmail should show to *username*: own personal + all shared."""
+    own = {addr.split("@", 1)[0] for addr in personal_addresses(data, username)}
+    return sorted(own | set(shared_local_parts(data)))
+
+
+def allowed_senders(data: dict[str, Any], username: str, domain: str) -> list[str]:
+    """Addresses *username* is allowed to use in From: (own personal + all shared)."""
+    own = list(personal_addresses(data, username))
+    shared = [f"{lp}@{domain}" for lp in shared_local_parts(data)]
+    return sorted(set(own + shared))
+
+
+def add_user(
+    data: dict[str, Any], username: str, personal_addresses_list: list[str]
+) -> dict[str, Any]:
+    """Register *username* with the given personal addresses. Returns *data*."""
+    data.setdefault("users", {})[username] = {
+        "personal_addresses": sorted(set(personal_addresses_list))
+    }
+    return data
+
+
+def sender_login_map(data: dict[str, Any], domain: str) -> dict[str, list[str]]:
+    """Build {address: [allowed-SASL-users]} for Postfix smtpd_sender_login_maps."""
+    users = list_users(data)
+    result: dict[str, list[str]] = {}
+    for u in users:
+        for addr in personal_addresses(data, u):
+            result.setdefault(addr, []).append(u)
+    for lp in shared_local_parts(data):
+        result.setdefault(f"{lp}@{domain}", []).extend(users)
+    return {addr: sorted(set(allowed)) for addr, allowed in result.items() if allowed}

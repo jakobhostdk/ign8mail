@@ -1,20 +1,24 @@
-"""Embedded Django setup and runner for the webmail interface."""
+"""Embedded Django setup and runner for the cooperative webmail interface."""
 
 from pathlib import Path
+from typing import Any
 
 
 def start(
     domain: str,
     imap_host: str,
-    passwords: dict,
-    autocreated: dict,
+    passwords: dict[str, str],
+    autocreated: dict[str, Any],
+    users: dict[str, Any],
     work_dir: Path,
     vault_path: Path,
-    admin_password: str = "",
     port: int = 8000,
 ) -> None:
     import secrets
+
     from django.conf import settings
+
+    overlay_db = work_dir / "seen.db"
 
     if not settings.configured:
         settings.configure(
@@ -41,11 +45,13 @@ def start(
             ROOT_URLCONF="ign8mail.webmail.urls",
             WEBMAIL_DOMAIN=domain,
             WEBMAIL_IMAP_HOST=imap_host,
+            WEBMAIL_SMTP_HOST=imap_host,
             WEBMAIL_PASSWORDS=passwords,
             WEBMAIL_AUTOCREATED=autocreated,
+            WEBMAIL_USERS=users,
             WEBMAIL_WORK_DIR=str(work_dir),
             WEBMAIL_VAULT_PATH=str(vault_path),
-            WEBMAIL_ADMIN_PASSWORD=admin_password,
+            WEBMAIL_OVERLAY_DB=str(overlay_db),
         )
 
     import django

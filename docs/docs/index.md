@@ -35,6 +35,7 @@ pipx install ign8mail
 ## Next steps
 
 - [Quickstart](quickstart.md) — your first mail server in five minutes.
+- [Cooperative webmail](webmail.md) — share `support@`, `sales@` etc. across the team; keep `<username>@` personal.
 - [Architecture](architecture.md) — what gets provisioned and where state lives.
 - [CLI reference](cli.md) — every command and flag.
 - [DNS records](dns.md) — exactly which records get created.

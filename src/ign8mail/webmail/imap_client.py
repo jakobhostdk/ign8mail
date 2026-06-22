@@ -1,17 +1,25 @@
-"""IMAP helpers for the webmail interface."""
+"""IMAP helpers for the webmail interface.
+
+Message identity is the IMAP UID (mailbox-scoped, stable across sessions).
+Shared mailboxes track "seen for me" in the per-user overlay rather than
+flipping the IMAP \\Seen flag.
+"""
 
 import email as _email
 import email.header
 import imaplib
 import ssl
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+from . import seen_store
 
 
 @dataclass
 class MessageSummary:
-    seq: str
+    uid: int
     subject: str
     sender: str
     date: str
@@ -20,7 +28,7 @@ class MessageSummary:
 
 @dataclass
 class FullMessage:
-    seq: str
+    uid: int
     subject: str
     sender: str
     date: str
@@ -92,20 +100,37 @@ def _cache_set(key: str, value: int) -> None:
     _local_cache[key] = (value, time.monotonic())
 
 
-def unread_count(host: str, username: str, password: str) -> int:
-    """Return number of unseen messages, or -1 on connection error."""
-    key = f"wm:unread:{host}:{username}"
+def unread_count(
+    host: str,
+    mailbox: str,
+    password: str,
+    *,
+    shared_for_user: str = "",
+    overlay_db: Path | None = None,
+) -> int:
+    """Return number of unseen messages, or -1 on connection error.
+
+    For shared mailboxes pass *shared_for_user* + *overlay_db*; the count is then
+    computed against the per-user overlay rather than IMAP \\Seen.
+    """
+    is_shared = bool(shared_for_user and overlay_db)
+    key = f"wm:unread:{host}:{mailbox}:{'shared:' + shared_for_user if is_shared else 'own'}"
     cached = _cache_get(key)
     if cached is not None:
         return cached
     try:
-        imap = _connect(host, username, password)
+        imap = _connect(host, mailbox, password)
     except Exception:
         return -1
     try:
         imap.select("INBOX", readonly=True)
-        _, data = imap.search(None, "UNSEEN")
-        count = len(data[0].split()) if data[0] else 0
+        if is_shared:
+            _, data = imap.uid("SEARCH", "ALL")
+            all_uids = [int(u) for u in (data[0].split() if data and data[0] else [])]
+            count = seen_store.unread_count(overlay_db, shared_for_user, mailbox, all_uids)  # type: ignore[arg-type]
+        else:
+            _, data = imap.search(None, "UNSEEN")
+            count = len(data[0].split()) if data[0] else 0
         _cache_set(key, count)
         return count
     except Exception:
@@ -117,30 +142,56 @@ def unread_count(host: str, username: str, password: str) -> int:
             pass
 
 
-def list_messages(host: str, username: str, password: str, limit: int = 100) -> list[MessageSummary]:
-    """Return messages sorted newest first."""
+def list_messages(
+    host: str,
+    mailbox: str,
+    password: str,
+    limit: int = 100,
+    *,
+    shared_for_user: str = "",
+    overlay_db: Path | None = None,
+) -> list[MessageSummary]:
+    """Return messages sorted newest first.
+
+    For shared mailboxes the `seen` flag reflects the per-user overlay; the
+    IMAP \\Seen flag is ignored.
+    """
+    is_shared = bool(shared_for_user and overlay_db)
     try:
-        imap = _connect(host, username, password)
+        imap = _connect(host, mailbox, password)
     except Exception:
         return []
     try:
         imap.select("INBOX", readonly=True)
-        _, data = imap.search(None, "ALL")
-        ids = data[0].split()
-        if not ids:
+        _, data = imap.uid("SEARCH", "ALL")
+        uids = data[0].split() if data and data[0] else []
+        if not uids:
             return []
-        recent = ids[-limit:][::-1]
+        recent = uids[-limit:][::-1]
+        seen_overlay: set[int] = set()
+        if is_shared:
+            int_uids = [int(u) for u in recent]
+            seen_overlay = seen_store.seen_uids(
+                overlay_db,  # type: ignore[arg-type]
+                shared_for_user, mailbox, int_uids,
+            )
         msgs = []
-        for seq in recent:
-            _, hdr_data = imap.fetch(seq, "(FLAGS BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])")
+        for uid in recent:
+            _, hdr_data = imap.uid(
+                "FETCH", uid, "(FLAGS BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])"
+            )
             if not hdr_data or not hdr_data[0]:
                 continue
             raw_flags, raw_hdr = hdr_data[0][0], hdr_data[0][1]
             flags_str = raw_flags.decode() if isinstance(raw_flags, bytes) else str(raw_flags)
-            seen = "\\Seen" in flags_str
+            uid_int = int(uid)
+            if is_shared:
+                seen = uid_int in seen_overlay
+            else:
+                seen = "\\Seen" in flags_str
             msg = _email.message_from_bytes(raw_hdr)
             msgs.append(MessageSummary(
-                seq=seq.decode(),
+                uid=uid_int,
                 subject=_decode(msg.get("Subject")) or "(no subject)",
                 sender=_decode(msg.get("From")) or "",
                 date=msg.get("Date") or "",
@@ -156,18 +207,28 @@ def list_messages(host: str, username: str, password: str, limit: int = 100) -> 
             pass
 
 
-def fetch_message(host: str, username: str, password: str, seq: str) -> FullMessage | None:
+def fetch_message(
+    host: str,
+    mailbox: str,
+    password: str,
+    uid: int,
+    *,
+    shared_for_user: str = "",
+    overlay_db: Path | None = None,
+) -> FullMessage | None:
+    """Fetch one message by UID. Marks it seen (overlay for shared, IMAP \\Seen for personal)."""
+    is_shared = bool(shared_for_user and overlay_db)
     try:
-        imap = _connect(host, username, password)
+        imap = _connect(host, mailbox, password)
     except Exception:
         return None
     try:
         imap.select("INBOX")
-        _, data = imap.fetch(seq, "(FLAGS RFC822)")
+        _, data = imap.uid("FETCH", str(uid), "(FLAGS RFC822)")
         if not data or not data[0]:
             return None
         flags_str = data[0][0].decode() if isinstance(data[0][0], bytes) else ""
-        seen = "\\Seen" in flags_str
+        seen_flag = "\\Seen" in flags_str
         msg = _email.message_from_bytes(data[0][1])
 
         body_text = body_html = ""
@@ -193,14 +254,19 @@ def fetch_message(host: str, username: str, password: str, seq: str) -> FullMess
                 else:
                     body_text = decoded
 
-        imap.store(seq, "+FLAGS", "\\Seen")
+        if is_shared:
+            seen_store.mark_seen(overlay_db, shared_for_user, mailbox, uid)  # type: ignore[arg-type]
+            displayed_seen = True
+        else:
+            imap.uid("STORE", str(uid), "+FLAGS", "\\Seen")
+            displayed_seen = seen_flag or True
 
         return FullMessage(
-            seq=seq,
+            uid=uid,
             subject=_decode(msg.get("Subject")) or "(no subject)",
             sender=_decode(msg.get("From")) or "",
             date=msg.get("Date") or "",
-            seen=seen,
+            seen=displayed_seen,
             body_text=body_text,
             body_html=body_html,
         )
@@ -211,3 +277,19 @@ def fetch_message(host: str, username: str, password: str, seq: str) -> FullMess
             imap.logout()
         except Exception:
             pass
+
+
+def fetch_recent_summaries(
+    host: str,
+    mailbox: str,
+    password: str,
+    *,
+    limit: int = 50,
+    shared_for_user: str = "",
+    overlay_db: Path | None = None,
+) -> list[MessageSummary]:
+    """Thin wrapper used by the unified inbox; returns newest *limit* messages."""
+    return list_messages(
+        host, mailbox, password, limit=limit,
+        shared_for_user=shared_for_user, overlay_db=overlay_db,
+    )
