@@ -1,0 +1,80 @@
+site_name: ign8mail
+site_description: Ignite a production-grade mail server in minutes — Hetzner + Cloudflare + Postfix/Dovecot/rspamd
+site_url: https://ign8mail.jakobholst.dk/
+repo_url: https://github.com/jakobholst/ign8mail
+repo_name: jakobholst/ign8mail
+copyright: Copyright &copy; Jakob Holst
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - content.code.annotate
+    - search.suggest
+    - search.highlight
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: pink
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: pink
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+nav:
+  - Home: index.md
+  - Quickstart: quickstart.md
+  - Architecture: architecture.md
+  - CLI reference: cli.md
+  - DNS records: dns.md
+  - Configuration: configuration.md
+  - Operations: operations.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/jakobholst/ign8mail
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/ign8mail/
