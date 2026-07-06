@@ -147,8 +147,8 @@ def _sidebar_mailboxes(cfg: dict, user: str) -> list[dict]:
 
 
 def _base_context(request: HttpRequest, cfg: dict, user: str, active: str = "") -> dict:
-    """Build shared context. Also applies any ?mailbox= override to the session
-    so that the picked context sticks across every page."""
+    """Build shared context. Also applies any ?mailbox= or ?days= override to
+    the session so the picks stick across every page."""
     visible = _visible_mailboxes(cfg, user)
     if "mailbox" in request.GET:
         requested = (request.GET.get("mailbox") or "").strip()
@@ -156,10 +156,20 @@ def _base_context(request: HttpRequest, cfg: dict, user: str, active: str = "") 
             request.session.pop("context_mailbox", None)
         elif requested in visible:
             request.session["context_mailbox"] = requested
+    if "days" in request.GET:
+        d = (request.GET.get("days") or "").strip().lower()
+        if d in ("", "all"):
+            request.session.pop("window_days", None)
+        else:
+            try:
+                request.session["window_days"] = max(1, int(d))
+            except ValueError:
+                pass
     ctx_mb = request.session.get("context_mailbox", "")
     if ctx_mb and ctx_mb not in visible:
         request.session.pop("context_mailbox", None)
         ctx_mb = ""
+    window_days = request.session.get("window_days")
     return {
         "user": user,
         "domain": cfg["domain"],
@@ -167,6 +177,7 @@ def _base_context(request: HttpRequest, cfg: dict, user: str, active: str = "") 
         "active_mailbox": active,
         "context_mailbox": ctx_mb,
         "context_mailboxes": visible,
+        "window_days": window_days,
     }
 
 
@@ -255,6 +266,8 @@ def logout_view(request: HttpRequest) -> HttpResponse:
 
 @_require_login
 def unified_inbox(request: HttpRequest) -> HttpResponse:
+    from datetime import datetime, timedelta, timezone
+
     cfg = _cfg()
     user = request.session["user"]
     ctx = _base_context(request, cfg, user)
@@ -263,8 +276,13 @@ def unified_inbox(request: HttpRequest) -> HttpResponse:
 
     entries = _fetch_all_summaries(cfg, user, mailboxes)
     threads = _threading.group_threads(entries)
-    rows = [_thread_to_row(cfg, t) for t in threads[:200]]
 
+    window_days = ctx["window_days"]
+    if window_days:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
+        threads = [t for t in threads if t.latest_dt >= cutoff]
+
+    rows = [_thread_to_row(cfg, t) for t in threads[:200]]
     ctx.update({"rows": rows, "view_mode": "list"})
     return render(request, "webmail/index.html", ctx)
 
@@ -312,7 +330,7 @@ def thread_view(request: HttpRequest, name: str, root_uid: int) -> HttpResponse:
 @_require_login
 def timeline_view(request: HttpRequest) -> HttpResponse:
     import math
-    from datetime import timedelta
+    from datetime import datetime, timedelta, timezone
 
     cfg = _cfg()
     user = request.session["user"]
@@ -322,6 +340,12 @@ def timeline_view(request: HttpRequest) -> HttpResponse:
 
     entries = _fetch_all_summaries(cfg, user, mailboxes, per_mailbox_limit=100)
     threads = _threading.group_threads(entries)
+
+    window_days = ctx["window_days"]
+    cutoff = None
+    if window_days:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
+        threads = [t for t in threads if t.latest_dt >= cutoff]
 
     # Filter noise: drop threads with epoch timestamps.
     good = [t for t in threads if t.latest_dt.timestamp() > 0]
@@ -335,6 +359,11 @@ def timeline_view(request: HttpRequest) -> HttpResponse:
 
     latest = max(t.latest_dt for t in good)
     earliest = min(t.latest_dt for t in good)
+    if cutoff is not None:
+        # Snap the axis to the window so it reads as "last N days" even when
+        # only a few threads land inside it.
+        earliest = cutoff
+        latest = max(latest, datetime.now(timezone.utc))
     if latest - earliest < timedelta(days=1):
         earliest = latest - timedelta(days=1)
     span = (latest - earliest).total_seconds()

@@ -245,6 +245,10 @@
     <a href="{% url 'index' %}" class="{% if view_mode == 'list' %}active{% endif %}">list</a>
     <a href="{% url 'timeline' %}" class="{% if view_mode == 'timeline' %}active{% endif %}">timeline</a>
   </div>
+  <div class="view-toggle">
+    <a href="?days=90" class="{% if window_days %}active{% endif %}">90 days</a>
+    <a href="?days=all" class="{% if not window_days %}active{% endif %}">all time</a>
+  </div>
   {% endblock %}
   <div class="topbar-user">
     <a href="{% url 'compose' %}" class="compose-btn">＋ Compose</a>

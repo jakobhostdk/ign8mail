@@ -26,5 +26,6 @@ mailboxes:
   - main
   - noemail
   - pypi
+  - solarwinds
   - valimail
   - zerothreat
