@@ -66,6 +66,45 @@
     .topbar-user a { color: var(--muted); text-decoration: none; transition: color 0.1s; }
     .topbar-user a:hover { color: var(--text); }
 
+    /* ── Context switcher ── */
+    .ctx-form { display: flex; align-items: center; gap: 0.35rem; }
+    .ctx-form input {
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: 6px;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      padding: 0.28rem 0.6rem;
+      width: 180px;
+      outline: none;
+    }
+    .ctx-form input:focus { border-color: var(--accent); }
+    .ctx-form .ctx-clear {
+      font-size: 0.7rem;
+      color: var(--muted);
+      text-decoration: none;
+      padding: 0 0.3rem;
+    }
+    .ctx-form .ctx-clear:hover { color: var(--text); }
+    .view-toggle {
+      display: inline-flex;
+      border: 1px solid var(--border2);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .view-toggle a {
+      padding: 0.28rem 0.7rem;
+      font-size: 0.72rem;
+      font-family: var(--mono);
+      color: var(--muted);
+      text-decoration: none;
+      background: var(--surface2);
+      transition: background 0.1s, color 0.1s;
+    }
+    .view-toggle a.active { background: var(--accent-dim); color: var(--accent); }
+    .view-toggle a:hover:not(.active) { color: var(--text); }
+
     /* ── Compose CTA ── */
     .compose-btn {
       background: var(--accent);
@@ -190,6 +229,23 @@
 <div class="topbar">
   <a class="topbar-logo" href="{% url 'index' %}">ign<span>8</span>mail</a>
   <span class="topbar-domain">@{{ domain }}</span>
+  <form class="ctx-form" method="get" action="{% block ctx_action %}{% url 'index' %}{% endblock %}">
+    <input list="ctx-mbs" name="mailbox"
+           placeholder="all mailboxes"
+           value="{{ context_mailbox }}"
+           autocomplete="off"
+           onchange="this.form.submit()">
+    <datalist id="ctx-mbs">
+      {% for name in context_mailboxes %}<option value="{{ name }}">{% endfor %}
+    </datalist>
+    {% if context_mailbox %}<a class="ctx-clear" href="?mailbox=">clear</a>{% endif %}
+  </form>
+  {% block topbar_extras %}
+  <div class="view-toggle">
+    <a href="{% url 'index' %}" class="{% if view_mode == 'list' %}active{% endif %}">list</a>
+    <a href="{% url 'timeline' %}" class="{% if view_mode == 'timeline' %}active{% endif %}">timeline</a>
+  </div>
+  {% endblock %}
   <div class="topbar-user">
     <a href="{% url 'compose' %}" class="compose-btn">＋ Compose</a>
     <span class="username">{{ user }}</span>
@@ -198,14 +254,19 @@
 </div>
 <div class="shell">
   <nav class="sidebar">
-    <a class="mb-item {% if active_mailbox == '' %}active{% endif %}" href="{% url 'index' %}">
+    {% if view_mode == 'timeline' %}
+      {% url 'timeline' as ctx_target %}
+    {% else %}
+      {% url 'index' as ctx_target %}
+    {% endif %}
+    <a class="mb-item {% if not context_mailbox %}active{% endif %}" href="{{ ctx_target }}?mailbox=">
       <span class="status-dot dot-active"></span>
       <span class="mb-name"><strong>All mail</strong></span>
     </a>
     <div class="sidebar-head">Mailboxes</div>
     {% for mb in sidebar_mailboxes %}
-    <a class="mb-item {% if mb.name == active_mailbox %}active{% endif %} {% if mb.status == 'disabled' %}disabled{% endif %}"
-       href="{% url 'mailbox' mb.name %}">
+    <a class="mb-item {% if mb.name == context_mailbox %}active{% endif %} {% if mb.status == 'disabled' %}disabled{% endif %}"
+       href="{{ ctx_target }}?mailbox={{ mb.name }}">
       <span class="status-dot {% if not mb.shared %}dot-personal{% elif mb.status == 'pending' or mb.status == 'enabled' %}dot-pending{% elif mb.status == 'disabled' %}dot-disabled{% elif mb.is_autocreated %}dot-autocreated{% else %}dot-active{% endif %}"></span>
       <span class="mb-name">{{ mb.name }}</span>
       {% if not mb.reachable %}

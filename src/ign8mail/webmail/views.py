@@ -20,7 +20,9 @@ from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_POST
 
-from . import imap_client
+from . import imap_client, threading as _threading
+from .imap_client import MessageSummary
+from .threading import Thread
 
 # ---- shared context helpers ---------------------------------------------
 
@@ -144,12 +146,70 @@ def _sidebar_mailboxes(cfg: dict, user: str) -> list[dict]:
     return result
 
 
-def _base_context(cfg: dict, user: str, active: str = "") -> dict:
+def _base_context(request: HttpRequest, cfg: dict, user: str, active: str = "") -> dict:
+    """Build shared context. Also applies any ?mailbox= override to the session
+    so that the picked context sticks across every page."""
+    visible = _visible_mailboxes(cfg, user)
+    if "mailbox" in request.GET:
+        requested = (request.GET.get("mailbox") or "").strip()
+        if not requested:
+            request.session.pop("context_mailbox", None)
+        elif requested in visible:
+            request.session["context_mailbox"] = requested
+    ctx_mb = request.session.get("context_mailbox", "")
+    if ctx_mb and ctx_mb not in visible:
+        request.session.pop("context_mailbox", None)
+        ctx_mb = ""
     return {
         "user": user,
         "domain": cfg["domain"],
         "sidebar_mailboxes": _sidebar_mailboxes(cfg, user),
         "active_mailbox": active,
+        "context_mailbox": ctx_mb,
+        "context_mailboxes": visible,
+    }
+
+
+def _fetch_all_summaries(
+    cfg: dict, user: str, mailboxes: list[str], per_mailbox_limit: int = 50,
+) -> list[tuple[str, MessageSummary]]:
+    """Return (mailbox, summary) pairs for the given mailboxes, in parallel."""
+    host = cfg["imap_host"]
+    overlay_db = cfg["overlay_db"]
+
+    def _fetch(name: str) -> list[tuple[str, MessageSummary]]:
+        pw = cfg["passwords"].get(name)
+        if not pw:
+            return []
+        shared = _is_shared_mailbox(cfg, name)
+        msgs = imap_client.fetch_recent_summaries(
+            host, name, pw, limit=per_mailbox_limit,
+            shared_for_user=user if shared else "",
+            overlay_db=overlay_db if shared else None,
+        )
+        return [(name, m) for m in msgs]
+
+    out: list[tuple[str, MessageSummary]] = []
+    if not mailboxes:
+        return out
+    with ThreadPoolExecutor(max_workers=min(len(mailboxes), 10)) as pool:
+        for batch in pool.map(_fetch, mailboxes):
+            out.extend(batch)
+    return out
+
+
+def _thread_to_row(cfg: dict, t: Thread) -> dict:
+    root_shared = _is_shared_mailbox(cfg, t.root_mailbox)
+    return {
+        "root_mailbox": t.root_mailbox,
+        "root_uid": t.root_uid,
+        "subject": t.subject,
+        "senders": ", ".join(t.senders),
+        "count": t.count,
+        "unseen_count": t.unseen_count,
+        "latest_date": t.messages[-1][1].date if t.messages else "",
+        "mailboxes": t.mailboxes,
+        "shared": root_shared,
     }
 
 
@@ -197,40 +257,150 @@ def logout_view(request: HttpRequest) -> HttpResponse:
 def unified_inbox(request: HttpRequest) -> HttpResponse:
     cfg = _cfg()
     user = request.session["user"]
-    visible = _visible_mailboxes(cfg, user)
-    overlay_db = cfg["overlay_db"]
-    host = cfg["imap_host"]
+    ctx = _base_context(request, cfg, user)
+    ctx_mb = ctx["context_mailbox"]
+    mailboxes = [ctx_mb] if ctx_mb else ctx["context_mailboxes"]
 
-    def _fetch(name: str) -> list[dict]:
-        pw = cfg["passwords"].get(name)
-        if not pw:
-            return []
-        shared = _is_shared_mailbox(cfg, name)
-        msgs = imap_client.fetch_recent_summaries(
-            host, name, pw, limit=30,
-            shared_for_user=user if shared else "",
-            overlay_db=overlay_db if shared else None,
-        )
-        return [{
-            "mailbox": name,
-            "uid": m.uid,
-            "subject": m.subject,
-            "sender": m.sender,
-            "date": m.date,
-            "seen": m.seen,
-            "shared": shared,
-        } for m in msgs]
+    entries = _fetch_all_summaries(cfg, user, mailboxes)
+    threads = _threading.group_threads(entries)
+    rows = [_thread_to_row(cfg, t) for t in threads[:200]]
 
-    rows: list[dict] = []
-    if visible:
-        with ThreadPoolExecutor(max_workers=min(len(visible), 10)) as pool:
-            for batch in pool.map(_fetch, visible):
-                rows.extend(batch)
-    rows.sort(key=lambda r: r["date"], reverse=True)
-
-    ctx = _base_context(cfg, user)
-    ctx.update({"rows": rows[:200]})
+    ctx.update({"rows": rows, "view_mode": "list"})
     return render(request, "webmail/index.html", ctx)
+
+
+@_require_login
+def thread_view(request: HttpRequest, name: str, root_uid: int) -> HttpResponse:
+    cfg = _cfg()
+    user = request.session["user"]
+    if name not in _visible_mailboxes(cfg, user):
+        return redirect("index")
+    entries = _fetch_all_summaries(cfg, user, [name], per_mailbox_limit=200)
+    threads = _threading.group_threads(entries)
+    match: Thread | None = None
+    for t in threads:
+        if t.root_mailbox == name and t.root_uid == root_uid:
+            match = t
+            break
+        if any(mb == name and m.uid == root_uid for mb, m in t.messages):
+            match = t
+            break
+    if match is None:
+        return redirect("mailbox", name=name)
+
+    messages = [{
+        "mailbox": mb,
+        "uid": m.uid,
+        "subject": m.subject,
+        "sender": m.sender,
+        "date": m.date,
+        "seen": m.seen,
+        "shared": _is_shared_mailbox(cfg, mb),
+    } for mb, m in match.messages]
+
+    ctx = _base_context(request, cfg, user, active=name)
+    ctx.update({
+        "subject": match.subject,
+        "count": match.count,
+        "unseen_count": match.unseen_count,
+        "messages": messages,
+        "root_mailbox": match.root_mailbox,
+    })
+    return render(request, "webmail/thread.html", ctx)
+
+
+@_require_login
+def timeline_view(request: HttpRequest) -> HttpResponse:
+    import math
+    from datetime import timedelta
+
+    cfg = _cfg()
+    user = request.session["user"]
+    ctx = _base_context(request, cfg, user)
+    ctx_mb = ctx["context_mailbox"]
+    mailboxes = [ctx_mb] if ctx_mb else ctx["context_mailboxes"]
+
+    entries = _fetch_all_summaries(cfg, user, mailboxes, per_mailbox_limit=100)
+    threads = _threading.group_threads(entries)
+
+    # Filter noise: drop threads with epoch timestamps.
+    good = [t for t in threads if t.latest_dt.timestamp() > 0]
+    if not good:
+        ctx.update({
+            "view_mode": "timeline",
+            "lanes": [], "months": [], "empty": True,
+            "svg_width": 900, "svg_height": 80,
+        })
+        return render(request, "webmail/timeline.html", ctx)
+
+    latest = max(t.latest_dt for t in good)
+    earliest = min(t.latest_dt for t in good)
+    if latest - earliest < timedelta(days=1):
+        earliest = latest - timedelta(days=1)
+    span = (latest - earliest).total_seconds()
+
+    left_pad = 110
+    right_pad = 30
+    top_pad = 40
+    lane_height = 40
+    plot_width = 900
+
+    lane_names = mailboxes  # preserve visible order
+    lanes = []
+    for idx, mb in enumerate(lane_names):
+        y = top_pad + idx * lane_height + lane_height / 2
+        dots = []
+        for t in good:
+            if t.root_mailbox != mb:
+                continue
+            frac = (t.latest_dt - earliest).total_seconds() / span if span else 0.5
+            x = left_pad + frac * plot_width
+            r = 4 + 2 * math.log2(max(t.count, 1))
+            dots.append({
+                "x": round(x, 1),
+                "y": round(y, 1),
+                "r": round(r, 1),
+                "subject": t.subject,
+                "count": t.count,
+                "root_mailbox": t.root_mailbox,
+                "root_uid": t.root_uid,
+                "date": t.messages[-1][1].date if t.messages else "",
+            })
+        lanes.append({"name": mb, "y": round(y, 1), "dots": dots})
+
+    # Month labels along the bottom.
+    months = []
+    cursor = earliest.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    while cursor <= latest:
+        frac = (cursor - earliest).total_seconds() / span if span else 0
+        if 0 <= frac <= 1:
+            months.append({
+                "x": round(left_pad + frac * plot_width, 1),
+                "label": cursor.strftime("%b %Y"),
+            })
+        # Advance ~1 month.
+        year, month = cursor.year, cursor.month
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+        cursor = cursor.replace(year=year, month=month)
+
+    svg_height = top_pad + len(lane_names) * lane_height + 40
+
+    ctx.update({
+        "view_mode": "timeline",
+        "lanes": lanes,
+        "months": months,
+        "empty": False,
+        "svg_width": left_pad + plot_width + right_pad,
+        "svg_height": svg_height,
+        "left_pad": left_pad,
+        "plot_width": plot_width,
+        "earliest_label": earliest.strftime("%Y-%m-%d"),
+        "latest_label": latest.strftime("%Y-%m-%d"),
+    })
+    return render(request, "webmail/timeline.html", ctx)
 
 
 @_require_login
@@ -249,7 +419,7 @@ def mailbox_view(request: HttpRequest, name: str) -> HttpResponse:
         overlay_db=cfg["overlay_db"] if shared else None,
     )
     status = _mailbox_status(name, cfg["autocreated"])
-    ctx = _base_context(cfg, user, active=name)
+    ctx = _base_context(request, cfg, user, active=name)
     ctx.update({
         "name": name,
         "email": f"{name}@{cfg['domain']}",
@@ -278,7 +448,7 @@ def message_view(request: HttpRequest, name: str, uid: int) -> HttpResponse:
     )
     if not msg:
         return redirect("mailbox", name=name)
-    ctx = _base_context(cfg, user, active=name)
+    ctx = _base_context(request, cfg, user, active=name)
     ctx.update({
         "name": name,
         "email": f"{name}@{cfg['domain']}",
@@ -338,7 +508,7 @@ def compose_view(request: HttpRequest) -> HttpResponse:
             except Exception as e:
                 error = f"Send failed: {e}"
 
-    ctx = _base_context(cfg, user)
+    ctx = _base_context(request, cfg, user)
     ctx.update({
         "allowed_senders": allowed,
         "initial": initial,

@@ -7,10 +7,12 @@ flipping the IMAP \\Seen flag.
 
 import email as _email
 import email.header
+import email.utils
 import imaplib
 import ssl
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +26,10 @@ class MessageSummary:
     sender: str
     date: str
     seen: bool
+    message_id: str = ""
+    in_reply_to: str = ""
+    references: list[str] = field(default_factory=list)
+    dt: datetime = field(default_factory=lambda: datetime.fromtimestamp(0, tz=timezone.utc))
 
 
 @dataclass
@@ -55,6 +61,19 @@ def _connect(host: str, username: str, password: str) -> imaplib.IMAP4_SSL:
     imap = imaplib.IMAP4_SSL(host, 993, ssl_context=ctx)
     imap.login(username, password)
     return imap
+
+
+def _parse_date(raw: str) -> datetime:
+    """Parse an RFC-5322 Date header; falls back to epoch on failure."""
+    if not raw:
+        return datetime.fromtimestamp(0, tz=timezone.utc)
+    try:
+        dt = email.utils.parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return datetime.fromtimestamp(0, tz=timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 _CACHE_TTL = 60
@@ -178,7 +197,9 @@ def list_messages(
         msgs = []
         for uid in recent:
             _, hdr_data = imap.uid(
-                "FETCH", uid, "(FLAGS BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])"
+                "FETCH", uid,
+                "(FLAGS BODY.PEEK[HEADER.FIELDS "
+                "(FROM SUBJECT DATE MESSAGE-ID IN-REPLY-TO REFERENCES)])",
             )
             if not hdr_data or not hdr_data[0]:
                 continue
@@ -190,12 +211,17 @@ def list_messages(
             else:
                 seen = "\\Seen" in flags_str
             msg = _email.message_from_bytes(raw_hdr)
+            date_hdr = msg.get("Date") or ""
             msgs.append(MessageSummary(
                 uid=uid_int,
                 subject=_decode(msg.get("Subject")) or "(no subject)",
                 sender=_decode(msg.get("From")) or "",
-                date=msg.get("Date") or "",
+                date=date_hdr,
                 seen=seen,
+                message_id=(msg.get("Message-ID") or "").strip(),
+                in_reply_to=(msg.get("In-Reply-To") or "").strip(),
+                references=[t for t in (msg.get("References") or "").split() if t],
+                dt=_parse_date(date_hdr),
             ))
         return msgs
     except Exception:

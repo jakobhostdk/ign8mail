@@ -1,0 +1,63 @@
+{% extends "webmail/base.html" %}
+
+{% block title %}{{ subject }} — ign8mail{% endblock %}
+
+{% block extra_css %}
+<style>
+  .thread-header {
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .thread-header h1 { font-size: 0.98rem; font-weight: 600; }
+  .thread-header .sub {
+    display: block;
+    margin-top: 0.35rem;
+    font-size: 0.75rem;
+    color: var(--muted);
+    font-family: var(--mono);
+  }
+  .msg-row {
+    display: grid;
+    grid-template-columns: 1fr 2.4fr auto;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.6rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+    text-decoration: none;
+    color: var(--text);
+    transition: background 0.1s;
+  }
+  .msg-row:hover { background: var(--surface2); }
+  .msg-row.unread { font-weight: 600; }
+  .msg-row:not(.unread) { color: var(--muted2); }
+  .msg-from, .msg-subject {
+    font-size: 0.82rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .msg-date {
+    font-size: 0.72rem;
+    color: var(--muted);
+    white-space: nowrap;
+    font-family: var(--mono);
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="thread-header">
+  <h1>{{ subject }}</h1>
+  <span class="sub">{{ count }} message{{ count|pluralize }} · {{ unseen_count }} unread · in <strong>{{ root_mailbox }}</strong></span>
+</div>
+<div>
+  {% for m in messages %}
+  <a class="msg-row {% if not m.seen %}unread{% endif %}"
+     href="{% url 'message' m.mailbox m.uid %}">
+    <span class="msg-from">{{ m.sender }}</span>
+    <span class="msg-subject">{{ m.subject }}</span>
+    <span class="msg-date">{{ m.date }}</span>
+  </a>
+  {% endfor %}
+</div>
+{% endblock %}

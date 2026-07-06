@@ -4,9 +4,9 @@
 
 {% block extra_css %}
 <style>
-  .msg-row {
+  .thread-row {
     display: grid;
-    grid-template-columns: 9rem 1fr 2.2fr auto;
+    grid-template-columns: 9rem 1fr 2.6fr auto auto;
     align-items: center;
     gap: 1rem;
     padding: 0.6rem 1.5rem;
@@ -15,9 +15,9 @@
     color: var(--text);
     transition: background 0.1s;
   }
-  .msg-row:hover { background: var(--surface2); }
-  .msg-row.unread { font-weight: 600; }
-  .msg-row:not(.unread) { color: var(--muted2); }
+  .thread-row:hover { background: var(--surface2); }
+  .thread-row.unread { font-weight: 600; }
+  .thread-row:not(.unread) { color: var(--muted2); }
   .mb-pill {
     font-family: var(--mono);
     font-size: 0.7rem;
@@ -33,13 +33,24 @@
   }
   .mb-pill.personal { color: var(--flame); border-color: rgba(249,115,22,.3); }
   .mb-pill.shared { color: var(--accent); border-color: rgba(59,130,246,.3); }
-  .msg-from, .msg-subject {
+  .thread-from, .thread-subject {
     font-size: 0.82rem;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .msg-date {
+  .thread-count {
+    font-size: 0.72rem;
+    color: var(--muted);
+    font-family: var(--mono);
+    background: var(--surface2);
+    padding: 1px 6px;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  .thread-count.multi { color: var(--accent); border-color: rgba(59,130,246,.3); }
+  .thread-date {
     font-size: 0.72rem;
     color: var(--muted);
     white-space: nowrap;
@@ -59,20 +70,23 @@
 
 {% block content %}
 <div class="page-header">
-  <h1>All mail</h1>
-  <span class="sub">{{ rows|length }} recent message{{ rows|length|pluralize }}</span>
+  <h1>{% if context_mailbox %}{{ context_mailbox }}{% else %}All mail{% endif %}</h1>
+  <span class="sub">{{ rows|length }} thread{{ rows|length|pluralize }}</span>
 </div>
 {% if rows %}
 <div>
   {% for row in rows %}
-  <a class="msg-row {% if not row.seen %}unread{% endif %}"
-     href="{% url 'message' row.mailbox row.uid %}">
-    <span class="mb-pill {% if row.shared %}shared{% else %}personal{% endif %}">{{ row.mailbox }}</span>
-    <span class="msg-from">
-      {% if not row.seen %}<span class="unseen-dot"></span>{% endif %}{{ row.sender }}
+  <a class="thread-row {% if row.unseen_count %}unread{% endif %}"
+     href="{% url 'thread' row.root_mailbox row.root_uid %}">
+    <span class="mb-pill {% if row.shared %}shared{% else %}personal{% endif %}">{{ row.root_mailbox }}</span>
+    <span class="thread-from">
+      {% if row.unseen_count %}<span class="unseen-dot"></span>{% endif %}{{ row.senders }}
     </span>
-    <span class="msg-subject">{{ row.subject }}</span>
-    <span class="msg-date">{{ row.date }}</span>
+    <span class="thread-subject">{{ row.subject }}</span>
+    <span class="thread-count {% if row.count > 1 %}multi{% endif %}">
+      {% if row.count > 1 %}{{ row.count }} msgs{% else %}1 msg{% endif %}
+    </span>
+    <span class="thread-date">{{ row.latest_date }}</span>
   </a>
   {% endfor %}
 </div>
