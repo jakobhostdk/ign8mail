@@ -288,6 +288,9 @@ if not settings.configured:
         WEBMAIL_VAULT_PATH='/etc/ign8mail/webmail.json',
         WEBMAIL_OVERLAY_DB='/var/lib/ign8mail/seen.db',
         WEBMAIL_SERVER_MODE=True,
+        DATA_UPLOAD_MAX_MEMORY_SIZE=26214400,
+        FILE_UPLOAD_MAX_MEMORY_SIZE=26214400,
+        DATA_UPLOAD_MAX_NUMBER_FIELDS=1000,
     )
 import django; django.setup()
 from django.core.wsgi import get_wsgi_application
@@ -823,11 +826,13 @@ class MailServerSetup:
     def _configure_webmail_nginx(self, domain: str) -> None:
         assert self._ssh
         proxy_block = (
+            "    client_max_body_size 25m;\n"
             "    location / {\n"
             "        proxy_pass http://127.0.0.1:8080;\n"
             "        proxy_set_header Host $host;\n"
             "        proxy_set_header X-Real-IP $remote_addr;\n"
             "        proxy_set_header X-Forwarded-Proto https;\n"
+            "        proxy_request_buffering off;\n"
             "    }\n"
         )
         nginx_conf = (

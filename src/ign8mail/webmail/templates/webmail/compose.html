@@ -79,7 +79,7 @@
   <h1>Compose</h1>
   <span class="sub">from {{ user }}@{{ domain }}</span>
 </div>
-<form method="post" action="{% url 'compose' %}" class="compose">
+<form method="post" action="{% url 'compose' %}" class="compose" enctype="multipart/form-data">
   {% csrf_token %}
   {% if sent %}<div class="alert alert-success">Message sent.</div>{% endif %}
   {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
@@ -107,6 +107,11 @@
   <div class="field">
     <label for="body">Message</label>
     <textarea id="body" name="body">{{ initial.body }}</textarea>
+  </div>
+
+  <div class="field">
+    <label for="attachments">Attachments</label>
+    <input id="attachments" name="attachments" type="file" multiple>
   </div>
 
   <div class="send-row">

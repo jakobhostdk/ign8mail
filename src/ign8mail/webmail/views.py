@@ -316,6 +316,7 @@ def compose_view(request: HttpRequest) -> HttpResponse:
         to = initial["to"].strip()
         subject = initial["subject"]
         body = initial["body"]
+        attachments = request.FILES.getlist("attachments")
         if from_addr not in allowed:
             error = "You are not allowed to send from that address."
         elif not to:
@@ -330,6 +331,7 @@ def compose_view(request: HttpRequest) -> HttpResponse:
                     to=to,
                     subject=subject,
                     body=body,
+                    attachments=attachments,
                 )
                 sent = True
                 initial = {"from_addr": default_from, "to": "", "subject": "", "body": ""}
@@ -354,8 +356,10 @@ def _send_mail(
     to: str,
     subject: str,
     body: str,
+    attachments: list | None = None,
 ) -> None:
     """Submit via Postfix on 587 with STARTTLS. sender_login_maps does the authz."""
+    import mimetypes
     import smtplib
     from email.message import EmailMessage
 
@@ -364,6 +368,19 @@ def _send_mail(
     msg["To"] = to
     msg["Subject"] = subject
     msg.set_content(body or "")
+
+    for f in attachments or []:
+        data = f.read()
+        if not data:
+            continue
+        ctype = getattr(f, "content_type", "") or mimetypes.guess_type(f.name)[0] or "application/octet-stream"
+        maintype, _, subtype = ctype.partition("/")
+        msg.add_attachment(
+            data,
+            maintype=maintype or "application",
+            subtype=subtype or "octet-stream",
+            filename=f.name,
+        )
 
     with smtplib.SMTP(smtp_host, 587, timeout=30) as s:
         s.starttls()
