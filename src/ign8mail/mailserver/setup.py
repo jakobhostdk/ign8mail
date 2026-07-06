@@ -790,6 +790,36 @@ class MailServerSetup:
         )
         self._configure_webmail_nginx(domain)
 
+    def push_webmail_config(
+        self,
+        passwords: dict[str, str],
+        autocreated: dict[str, dict[str, str]],
+        users: dict[str, dict],
+    ) -> None:
+        """Merge new passwords/autocreated/users into /etc/ign8mail/webmail.json
+        and restart the webmail service. Requires `deploy_webmail` to have run first."""
+        assert self._ssh, "Call connect() first"
+        sftp = self._ssh.open_sftp()
+        try:
+            try:
+                with sftp.open("/etc/ign8mail/webmail.json", "r") as f:
+                    config = json.loads(f.read().decode())
+            except IOError as e:
+                raise RuntimeError(
+                    "/etc/ign8mail/webmail.json not found — run `ign8mail deploy-webmail` first."
+                ) from e
+            config["passwords"] = passwords
+            config["autocreated"] = autocreated
+            config["users"] = users
+            sftp.putfo(
+                io.BytesIO(json.dumps(config, indent=2).encode()),
+                "/etc/ign8mail/webmail.json",
+            )
+        finally:
+            sftp.close()
+        self._exec("chmod 600 /etc/ign8mail/webmail.json")
+        self._exec("systemctl restart ign8mail-webmail")
+
     def _configure_webmail_nginx(self, domain: str) -> None:
         assert self._ssh
         proxy_block = (

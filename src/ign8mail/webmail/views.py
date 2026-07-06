@@ -56,10 +56,22 @@ def _shared_local_parts(cfg: dict) -> list[str]:
     return sorted(m for m in cfg["passwords"].keys() if m not in personal)
 
 
+def _is_webmail_visible(cfg: dict, name: str) -> bool:
+    """Autocreated mailboxes appear in webmail only after `ign8mail autocreated
+    enable <name>`. Mailboxes not tracked as autocreated (i.e. seeded manually
+    via the vault) are always visible."""
+    info = cfg["autocreated"].get(name)
+    if info is None:
+        return True
+    return info.get("status") == "enabled"
+
+
 def _visible_mailboxes(cfg: dict, user: str) -> list[str]:
-    """Mailbox local-parts that *user* can see: their own personal + all shared."""
+    """Mailbox local-parts that *user* can see: their own personal + all shared,
+    filtered so autocreated entries only appear once explicitly enabled."""
     own = {addr.split("@", 1)[0] for addr in _personal_addresses_for(cfg, user)}
-    return sorted(own | set(_shared_local_parts(cfg)))
+    candidates = own | set(_shared_local_parts(cfg))
+    return sorted(name for name in candidates if _is_webmail_visible(cfg, name))
 
 
 def _is_shared_mailbox(cfg: dict, mailbox: str) -> bool:
@@ -68,8 +80,10 @@ def _is_shared_mailbox(cfg: dict, mailbox: str) -> bool:
 
 def _allowed_senders(cfg: dict, user: str) -> list[str]:
     domain = cfg["domain"]
-    own = _personal_addresses_for(cfg, user)
-    shared = [f"{lp}@{domain}" for lp in _shared_local_parts(cfg)]
+    own = [a for a in _personal_addresses_for(cfg, user)
+           if _is_webmail_visible(cfg, a.split("@", 1)[0])]
+    shared = [f"{lp}@{domain}" for lp in _shared_local_parts(cfg)
+              if _is_webmail_visible(cfg, lp)]
     return sorted(set(own + shared))
 
 
@@ -107,8 +121,6 @@ def _sidebar_mailboxes(cfg: dict, user: str) -> list[dict]:
         if not pw:
             return None
         status = _mailbox_status(name, autocreated)
-        if status == "silenced":
-            return None
         shared = _is_shared_mailbox(cfg, name)
         unread = imap_client.unread_count(
             host, name, pw,
@@ -192,8 +204,6 @@ def unified_inbox(request: HttpRequest) -> HttpResponse:
     def _fetch(name: str) -> list[dict]:
         pw = cfg["passwords"].get(name)
         if not pw:
-            return []
-        if _mailbox_status(name, cfg["autocreated"]) == "silenced":
             return []
         shared = _is_shared_mailbox(cfg, name)
         msgs = imap_client.fetch_recent_summaries(

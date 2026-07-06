@@ -1326,16 +1326,54 @@ def sync(
 def enable(
     name: str = typer.Argument(..., help="Username of the auto-created mailbox"),
     domain: str = typer.Option("", envvar="IGN8_DOMAIN", help="Mail domain — used for display"),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+    skip_push: bool = typer.Option(
+        False, "--skip-push", help="Only update the vault; don't push to the webmail server"
+    ),
 ) -> None:
-    """Keep an auto-created mailbox (mark it as enabled)."""
+    """Keep an auto-created mailbox (mark it as enabled) and expose it in webmail."""
     entries = _load_autocreated(_vault)
     if name not in entries:
         console.print(f"[red]Error:[/red] '{name}' not found in auto-created mailboxes.")
         raise typer.Exit(1)
+    password = entries[name].get("password")
+    if not password:
+        console.print(
+            f"[red]Error:[/red] '{name}' has no stored password "
+            "(was it silenced?). Re-run `ign8mail autocreated sync` after the "
+            "server re-creates the mailbox."
+        )
+        raise typer.Exit(1)
+
     entries[name]["status"] = "enabled"
-    _save_autocreated(entries, _vault)
+    vault_data = vault.load(_vault) if _vault.exists() else {}
+    vault_data.setdefault("mailbox_passwords", {})[name] = password
+    vault_data["autocreated_mailboxes"] = entries
+    vault.save(vault_data, _vault)
+
     email = f"{name}@{domain}" if domain else name
-    console.print(f"[green]Mailbox [bold]{email}[/bold] enabled.[/green]")
+
+    if skip_push:
+        console.print(
+            f"[green]Mailbox [bold]{email}[/bold] enabled in vault "
+            "(webmail server not updated — pass without --skip-push, or run "
+            "`ign8mail deploy-webmail`).[/green]"
+        )
+        return
+
+    ipv4, priv_key = _autocreated_setup(work_dir)
+    setup = _make_setup(ipv4, priv_key)
+    setup.connect(retries=3, delay=5)
+    try:
+        setup.push_webmail_config(
+            passwords=vault_data.get("mailbox_passwords") or {},
+            autocreated=entries,
+            users=vault_data.get("users") or {},
+        )
+    finally:
+        setup.disconnect()
+
+    console.print(f"[green]Mailbox [bold]{email}[/bold] enabled — visible in webmail.[/green]")
 
 
 @_autocreated_app.command()
