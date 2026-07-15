@@ -486,6 +486,36 @@ def message_view(request: HttpRequest, name: str, uid: int) -> HttpResponse:
     return render(request, "webmail/message.html", ctx)
 
 
+_INLINE_TYPES = {"application/pdf", "text/plain"}
+
+
+@_require_login
+def attachment_view(request: HttpRequest, name: str, uid: int, index: int) -> HttpResponse:
+    """Stream one MIME attachment. PDFs/images render inline; everything else
+    downloads. Content-Type is trusted from the IMAP source; nosniff prevents
+    Chrome from second-guessing it into something executable."""
+    from urllib.parse import quote
+
+    cfg = _cfg()
+    user = request.session["user"]
+    if name not in _visible_mailboxes(cfg, user):
+        return redirect("index")
+    pw = cfg["passwords"].get(name)
+    if not pw:
+        return redirect("index")
+    result = imap_client.fetch_attachment(cfg["imap_host"], name, pw, uid, index)
+    if result is None:
+        return redirect("message", name=name, uid=uid)
+    filename, content_type, payload = result
+    inline = content_type in _INLINE_TYPES or content_type.startswith("image/")
+    disposition = "inline" if inline else "attachment"
+    quoted = quote(filename, safe="")
+    resp = HttpResponse(payload, content_type=content_type or "application/octet-stream")
+    resp["Content-Disposition"] = f"{disposition}; filename*=UTF-8''{quoted}"
+    resp["X-Content-Type-Options"] = "nosniff"
+    return resp
+
+
 # ---- compose ------------------------------------------------------------
 
 

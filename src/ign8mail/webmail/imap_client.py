@@ -33,6 +33,14 @@ class MessageSummary:
 
 
 @dataclass
+class AttachmentSummary:
+    index: int
+    filename: str
+    content_type: str
+    size: int
+
+
+@dataclass
 class FullMessage:
     uid: int
     subject: str
@@ -41,6 +49,27 @@ class FullMessage:
     seen: bool
     body_text: str = ""
     body_html: str = ""
+    attachments: list[AttachmentSummary] = field(default_factory=list)
+
+
+def _is_attachment_part(part: Any) -> bool:
+    """A MIME part is an attachment when it's a leaf (non-multipart) part that
+    either declares Content-Disposition or carries a filename, or isn't the
+    inline body (text/plain, text/html).
+
+    Message bodies are text/plain or text/html without a Content-Disposition
+    of attachment. Everything else — PDFs, images, application/*, and inline
+    text with a filename — is exposed as a downloadable attachment."""
+    if part.is_multipart():
+        return False
+    disp = (part.get("Content-Disposition") or "").split(";", 1)[0].strip().lower()
+    if disp == "attachment":
+        return True
+    filename = part.get_filename()
+    ct = (part.get_content_type() or "").lower()
+    if filename:
+        return True
+    return ct not in ("text/plain", "text/html")
 
 
 def _decode(value: str | None) -> str:
@@ -258,8 +287,18 @@ def fetch_message(
         msg = _email.message_from_bytes(data[0][1])
 
         body_text = body_html = ""
+        attachments: list[AttachmentSummary] = []
         if msg.is_multipart():
-            for part in msg.walk():
+            for idx, part in enumerate(msg.walk()):
+                if _is_attachment_part(part):
+                    payload = part.get_payload(decode=True) or b""
+                    attachments.append(AttachmentSummary(
+                        index=idx,
+                        filename=_decode(part.get_filename() or "") or f"part-{idx}",
+                        content_type=(part.get_content_type() or "application/octet-stream").lower(),
+                        size=len(payload),
+                    ))
+                    continue
                 ct = part.get_content_type()
                 payload = part.get_payload(decode=True)
                 if not payload:
@@ -295,7 +334,50 @@ def fetch_message(
             seen=displayed_seen,
             body_text=body_text,
             body_html=body_html,
+            attachments=attachments,
         )
+    except Exception:
+        return None
+    finally:
+        try:
+            imap.logout()
+        except Exception:
+            pass
+
+
+def fetch_attachment(
+    host: str,
+    mailbox: str,
+    password: str,
+    uid: int,
+    index: int,
+) -> tuple[str, str, bytes] | None:
+    """Return (filename, content_type, payload_bytes) for one attachment part,
+    identified by its 0-based walk-order index (matching FullMessage.attachments).
+    Does not touch \\Seen — it's expected to be called after fetch_message,
+    which already marked the message seen."""
+    try:
+        imap = _connect(host, mailbox, password)
+    except Exception:
+        return None
+    try:
+        imap.select("INBOX")
+        _, data = imap.uid("FETCH", str(uid), "(RFC822)")
+        if not data or not data[0]:
+            return None
+        msg = _email.message_from_bytes(data[0][1])
+        if not msg.is_multipart():
+            return None
+        for idx, part in enumerate(msg.walk()):
+            if idx != index:
+                continue
+            if not _is_attachment_part(part):
+                return None
+            payload = part.get_payload(decode=True) or b""
+            filename = _decode(part.get_filename() or "") or f"part-{idx}"
+            ct = (part.get_content_type() or "application/octet-stream").lower()
+            return filename, ct, payload
+        return None
     except Exception:
         return None
     finally:

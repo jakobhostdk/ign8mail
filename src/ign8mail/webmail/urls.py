@@ -10,6 +10,7 @@ urlpatterns = [
     path("timeline/", views.timeline_view, name="timeline"),
     path("m/<str:name>/action/", views.mailbox_action, name="mailbox_action"),
     path("m/<str:name>/thread/<int:root_uid>/", views.thread_view, name="thread"),
+    path("m/<str:name>/<int:uid>/att/<int:index>/", views.attachment_view, name="attachment"),
     path("m/<str:name>/<int:uid>/", views.message_view, name="message"),
     path("m/<str:name>/", views.mailbox_view, name="mailbox"),
 ]

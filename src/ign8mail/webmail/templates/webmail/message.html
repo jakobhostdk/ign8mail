@@ -64,6 +64,38 @@
     width: 100%;
   }
   .back-link:hover { color: var(--text); }
+  .attachments {
+    padding: 0.75rem 1.5rem 1.25rem;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .attachments-head {
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 0.15rem;
+  }
+  .att-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.4rem 0.75rem;
+    background: var(--surface2);
+    border: 1px solid var(--border2);
+    border-radius: 6px;
+    color: var(--text);
+    text-decoration: none;
+    font-size: 0.82rem;
+    max-width: max-content;
+    transition: background 0.1s;
+  }
+  .att-item:hover { background: var(--border2); }
+  .att-name { font-family: var(--mono); }
+  .att-meta { font-size: 0.7rem; color: var(--muted); font-family: var(--mono); }
 </style>
 {% endblock %}
 
@@ -92,4 +124,15 @@
   <p style="color:var(--muted);font-size:0.85rem">No message body.</p>
   {% endif %}
 </div>
+{% if msg.attachments %}
+<div class="attachments">
+  <div class="attachments-head">Attachments ({{ msg.attachments|length }})</div>
+  {% for att in msg.attachments %}
+  <a class="att-item" href="{% url 'attachment' name=name uid=msg.uid index=att.index %}" target="_blank" rel="noopener">
+    <span class="att-name">📎 {{ att.filename }}</span>
+    <span class="att-meta">{{ att.content_type }} · {{ att.size|filesizeformat }}</span>
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
 {% endblock %}
