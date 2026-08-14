@@ -546,8 +546,8 @@ class MailServerSetup:
         )
         self._create_mailboxes(username)
         self._exec(
-            f"grep -qF '^{username} ' /etc/postfix/local_recipients || "
-            f"echo '{username} {username}' >> /etc/postfix/local_recipients && "
+            f"grep -qxF '{username} {username}' /etc/postfix/local_recipients || "
+            f"echo '{username} {username}' >> /etc/postfix/local_recipients; "
             f"postmap /etc/postfix/local_recipients && systemctl reload postfix"
         )
 
