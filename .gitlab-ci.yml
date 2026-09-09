@@ -1,0 +1,104 @@
+# ign8mail webmail pipeline — build the Django image, deploy the swarm stack
+# to the shared cluster (docker.sock mounted on the runner), and a manual
+# diagnose job. Mirrors the pacmanclone pipeline pattern.
+#
+# Only the webmail is containerized. `ign8mail up` and the Postfix/Dovecot
+# provisioner still run from a workstation against Hetzner.
+
+variables:
+  IMAGE_TAG_SHA: "${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHORT_SHA}"
+  IMAGE_TAG_BRANCH: "${CI_REGISTRY_IMAGE}:${CI_COMMIT_REF_SLUG}"
+  STACK_NAME: ign8mail_webmail
+  STACK_FILE: swarm/webmail-stack.yml
+  APP_DOMAIN: webmail.jakobholst.dk
+
+stages:
+  - build
+  - deploy
+  - diagnose
+
+# ------------------------------------------------------------------
+# BUILD — buildx build+push in one step. Separate `docker build` + `docker push`
+# hits an intermittent "blob unknown to registry" bug on GitLab's registry
+# where BuildKit's parallel blob upload race causes the manifest push to
+# reference a not-yet-committed blob. `buildx --push` atomically resolves.
+# ------------------------------------------------------------------
+build:
+  stage: build
+  image: docker:27-cli
+  tags: [dedicated, deploy]
+  before_script:
+    - docker buildx create --use --name gitlab-builder --driver docker-container >/dev/null 2>&1 || docker buildx use gitlab-builder
+    - echo "$CI_JOB_TOKEN" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  script:
+    - |
+      docker buildx build --push \
+        --tag "$IMAGE_TAG_SHA" \
+        --tag "$IMAGE_TAG_BRANCH" \
+        --label "org.opencontainers.image.source=$CI_PROJECT_URL" \
+        --label "org.opencontainers.image.revision=$CI_COMMIT_SHA" \
+        --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --cache-from "type=registry,ref=${IMAGE_TAG_BRANCH}" \
+        --cache-to "type=inline" \
+        .
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+# ------------------------------------------------------------------
+# DEPLOY — docker stack deploy on the runner (docker.sock is the manager).
+# Manual on first onboarding; flip to auto once the cert is issued and the
+# service is stable. Requires the two docker secrets to exist first:
+#   ign8mail_webmail_config, ign8mail_django_secret_key (see stack file).
+# ------------------------------------------------------------------
+deploy:
+  stage: deploy
+  image: docker:27-cli
+  tags: [dedicated, deploy]
+  needs: [build]
+  before_script:
+    # Login with the group deploy token (no expiry) — its creds get embedded
+    # into the swarm service spec by --with-registry-auth so tasks can pull
+    # on any future restart. CI_JOB_TOKEN expires when the job ends and
+    # blocks later restarts.
+    - echo "$SWARM_REGISTRY_TOKEN" | docker login -u "$SWARM_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  script:
+    - test -f "$STACK_FILE" || { echo "$STACK_FILE not found"; exit 1; }
+    - docker stack deploy --with-registry-auth --resolve-image=always -c "$STACK_FILE" "$STACK_NAME"
+    - docker service ls --filter "name=${STACK_NAME}_"
+  environment:
+    name: production
+    url: "https://${APP_DOMAIN}"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+    - if: $CI_COMMIT_TAG
+      when: manual
+
+# ------------------------------------------------------------------
+# DIAGNOSE — inspect swarm + traefik state for this stack from the runner.
+# Manual, no side effects. Use to troubleshoot 502/404 at the edge.
+# ------------------------------------------------------------------
+diagnose:
+  stage: diagnose
+  image: docker:27-cli
+  tags: [dedicated, deploy]
+  needs: []
+  script:
+    - |
+      set +e
+      echo "=== swarm services matching ${STACK_NAME}_ ==="
+      docker service ls --filter "name=${STACK_NAME}_"
+      echo "=== ${STACK_NAME}_web spec labels ==="
+      docker service inspect "${STACK_NAME}_web" --format '{{json .Spec.Labels}}' | tr ',' '\n' || echo "(no ${STACK_NAME}_web service)"
+      echo "=== ${STACK_NAME}_web tasks ==="
+      docker service ps --no-trunc "${STACK_NAME}_web"
+      echo "=== ${STACK_NAME}_web last 40 log lines ==="
+      docker service logs --tail 40 "${STACK_NAME}_web"
+      echo "=== traefik log — lines mentioning ${STACK_NAME} or ${APP_DOMAIN} ==="
+      docker service logs --tail 400 edge_traefik 2>&1 | grep -iE "${STACK_NAME}|${APP_DOMAIN}" | tail -30
+      exit 0
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true

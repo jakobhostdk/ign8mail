@@ -1,0 +1,71 @@
+# ign8mail webmail — served at https://webmail.jakobholst.dk via the shared
+# Traefik on the swarm cluster. TLS via cloudflare cert resolver (DNS-01);
+# jakobholst.dk lives in the same Cloudflare account as *.traeck.it so the
+# existing Traefik credentials cover it.
+#
+# Before `docker stack deploy`, create the two secrets and the volume:
+#
+#   # 1. Config JSON — rendered from the ansible vault on the operator's box.
+#   #    Shape: {domain, imap_host, smtp_host, passwords, autocreated, users}
+#   docker secret create ign8mail_webmail_config ./webmail_config.json
+#
+#   # 2. Django secret key
+#   openssl rand -hex 32 | docker secret create ign8mail_django_secret_key -
+#
+# The `seen.db` volume is created automatically on first deploy.
+#
+# Priority note: boligtracker's router uses HostRegexp(`^[a-z0-9-]+\.traeck\.it$$`)
+# which by Traefik's default rule-length priority OUTRANKS a plain Host() rule.
+# Pinning ourselves to priority=100000 mirrors the pacman/renovate-desktop fix,
+# though the risk here is smaller because our host is on jakobholst.dk not
+# traeck.it — kept for symmetry.
+
+services:
+  web:
+    image: ${IMAGE_TAG_SHA}
+    environment:
+      WEBMAIL_ALLOWED_HOSTS: webmail.jakobholst.dk
+      WEBMAIL_CONFIG_PATH: /run/secrets/ign8mail_webmail_config
+      WEBMAIL_SECRET_KEY_PATH: /run/secrets/ign8mail_django_secret_key
+      WEBMAIL_WORK_DIR: /var/lib/ign8mail
+    secrets:
+      - ign8mail_webmail_config
+      - ign8mail_django_secret_key
+    volumes:
+      - seen_db:/var/lib/ign8mail
+    networks:
+      - traefik-public
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+      update_config:
+        order: start-first
+        failure_action: rollback
+      resources:
+        limits:
+          memory: 256M
+      labels:
+        - traefik.enable=true
+        - traefik.http.routers.ign8mail-webmail.rule=Host(`webmail.jakobholst.dk`)
+        - traefik.http.routers.ign8mail-webmail.priority=100000
+        - traefik.http.routers.ign8mail-webmail.entrypoints=websecure
+        - traefik.http.routers.ign8mail-webmail.tls=true
+        - traefik.http.routers.ign8mail-webmail.tls.certresolver=cloudflare
+        - traefik.http.services.ign8mail-webmail.loadbalancer.server.port=8000
+
+secrets:
+  ign8mail_webmail_config:
+    external: true
+  ign8mail_django_secret_key:
+    external: true
+
+volumes:
+  seen_db:
+
+networks:
+  traefik-public:
+    external: true
