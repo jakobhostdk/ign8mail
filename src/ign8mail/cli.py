@@ -449,6 +449,146 @@ def sync_aerc(
     console.print(Panel(table, title="[bold]sync-aerc[/bold]"))
 
 
+@app.command(name="sync-claude")
+def sync_claude(
+    domain: str = typer.Option(..., envvar="IGN8_DOMAIN", help="Mail domain"),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+    config: Path = typer.Option(None, help="Claude config file (default: ~/.claude.json)"),
+    prefix: str = typer.Option("imap-", help="MCP server name prefix"),
+    package: str = typer.Option(
+        "@cynosure-mcp/imap-email", help="npm package that provides the IMAP MCP server"
+    ),
+) -> None:
+    """Register all active mailboxes as IMAP MCP servers in Claude's config."""
+    state_path = work_dir / "state.json"
+    if not state_path.exists():
+        console.print("[red]Error:[/red] No state file — run `ign8mail up` first.")
+        raise typer.Exit(1)
+
+    state = json.loads(state_path.read_text())
+    ipv4 = state.get("ipv4", "")
+    priv_key = work_dir / "keys" / "ign8mail"
+    if not ipv4 or not priv_key.exists():
+        console.print("[red]Error:[/red] Missing server IP or SSH key.")
+        raise typer.Exit(1)
+
+    claude_config = config or Path.home() / ".claude.json"
+
+    passwords: dict = {}
+    autocreated: dict = {}
+    if _vault.exists():
+        try:
+            vdata = vault.load(_vault)
+            passwords = vdata.get("mailbox_passwords", {}) or {}
+            autocreated = vdata.get("autocreated_mailboxes", {}) or {}
+        except Exception:
+            pass
+
+    cfg = Config(
+        domain="placeholder",
+        admin_email="placeholder@placeholder.com",  # type: ignore[arg-type]
+        hetzner_token="placeholder",
+        cloudflare_token="placeholder",
+        cloudflare_zone_id="placeholder",
+    )
+    setup = MailServerSetup(cfg, host=ipv4, private_key_path=str(priv_key))
+    setup.connect(retries=3, delay=5)
+    try:
+        users = setup.list_users()
+    finally:
+        setup.disconnect()
+
+    imap_host = f"mail.{domain}"
+
+    if claude_config.exists():
+        try:
+            claude_data = json.loads(claude_config.read_text())
+        except json.JSONDecodeError as e:
+            console.print(f"[red]Error:[/red] Could not parse {claude_config}: {e}")
+            raise typer.Exit(1) from e
+        # Backup once per invocation before mutating.
+        backup = claude_config.with_suffix(claude_config.suffix + ".bak")
+        backup.write_text(claude_config.read_text())
+    else:
+        claude_data = {}
+
+    mcp_servers = claude_data.setdefault("mcpServers", {})
+
+    written: list[str] = []
+    skipped: list[str] = []
+    no_pw: list[str] = []
+    active_names: set[str] = set()
+
+    for u in users:
+        name = u["username"]
+        ac = autocreated.get(name, {})
+        if ac.get("status") in ("silenced", "disabled"):
+            skipped.append(name)
+            continue
+        pw = passwords.get(name, "")
+        if not pw:
+            no_pw.append(name)
+            continue
+
+        server_name = f"{prefix}{name}"
+        mcp_servers[server_name] = {
+            "type": "stdio",
+            "command": "npx",
+            "args": ["-y", package],
+            "env": {
+                "IMAP_HOST": imap_host,
+                "IMAP_PORT": "993",
+                "IMAP_TLS": "true",
+                "IMAP_USER": name,
+                "IMAP_PASSWORD": pw,
+                "SMTP_HOST": imap_host,
+                "SMTP_PORT": "587",
+                "EMAIL_FROM": f"{name}@{domain}",
+            },
+        }
+        active_names.add(server_name)
+        written.append(name)
+
+    server_local_parts = {u["username"] for u in users}
+    removed: list[str] = []
+    for existing in list(mcp_servers):
+        if not existing.startswith(prefix) or existing in active_names:
+            continue
+        entry = mcp_servers[existing]
+        if not isinstance(entry, dict):
+            continue
+        env = entry.get("env") or {}
+        if env.get("IMAP_HOST") != imap_host:
+            continue
+        # Leave entries alone if the mailbox still exists on the server — we
+        # may just be missing its password in the vault this run.
+        local = existing.removeprefix(prefix)
+        if local in server_local_parts:
+            continue
+        del mcp_servers[existing]
+        removed.append(local)
+
+    tmp = claude_config.with_suffix(claude_config.suffix + ".tmp")
+    tmp.write_text(json.dumps(claude_data, indent=2))
+    tmp.replace(claude_config)
+
+    table = Table(show_header=False, box=None, padding=(0, 1))
+    table.add_column("key", style="bold")
+    table.add_column("value")
+    table.add_row("Config", str(claude_config))
+    table.add_row(
+        "MCP servers written",
+        str(len(written)) + (f" ({', '.join(written)})" if written else ""),
+    )
+    if removed:
+        table.add_row("Removed (no longer active)", ", ".join(removed))
+    if skipped:
+        table.add_row("Skipped (inactive)", ", ".join(skipped))
+    if no_pw:
+        table.add_row("No password in vault", ", ".join(no_pw))
+    console.print(Panel(table, title="[bold]sync-claude[/bold]"))
+
+
 @app.command()
 def read(
     account: str = typer.Argument("", help="Optional: account to focus on launch (e.g. alice or alice@example.com)"),
@@ -2495,6 +2635,7 @@ def _print_intro() -> None:
         ("list", "show all inboxes with unread counts"),
         ("sync-thunderbird", "sync all accounts to Thunderbird"),
         ("sync-aerc", "sync all accounts to aerc"),
+        ("sync-claude", "sync all accounts as Claude MCP servers"),
         ("checkmail <user>", "send + receive test for one account"),
         ("passwd-recycle", "rotate all mailbox passwords"),
         ("--help", "full command reference"),
