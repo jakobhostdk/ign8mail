@@ -166,12 +166,17 @@
     }
     .mb-badge.zero { background: transparent; color: var(--muted); }
     .mb-badge.error { background: var(--border2); color: var(--muted); }
+    .mb-badge.loading { background: transparent; color: var(--muted); }
     .status-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
     .dot-active { background: var(--green); }
     .dot-pending { background: var(--yellow); }
     .dot-disabled { background: var(--muted); }
     .dot-autocreated { background: var(--accent); }
     .dot-personal { background: var(--flame); }
+    .dot-loading { background: var(--border2); }
+    .mb-item.mb-loading .mb-name { color: var(--muted); }
+    @keyframes pulse { 0%,100% { opacity: 0.55; } 50% { opacity: 1; } }
+    .mb-badge.loading, .dot-loading { animation: pulse 1.4s ease-in-out infinite; }
 
     /* ── Main ── */
     .main { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
@@ -246,7 +251,8 @@
     <a href="{% url 'timeline' %}" class="{% if view_mode == 'timeline' %}active{% endif %}">timeline</a>
   </div>
   <div class="view-toggle">
-    <a href="?days=90" class="{% if window_days %}active{% endif %}">90 days</a>
+    <a href="?days=1" class="{% if window_days == 1 %}active{% endif %}">today</a>
+    <a href="?days=90" class="{% if window_days == 90 %}active{% endif %}">90 days</a>
     <a href="?days=all" class="{% if not window_days %}active{% endif %}">all time</a>
   </div>
   {% endblock %}
@@ -268,24 +274,82 @@
       <span class="mb-name"><strong>All mail</strong></span>
     </a>
     <div class="sidebar-head">Mailboxes</div>
-    {% for mb in sidebar_mailboxes %}
-    <a class="mb-item {% if mb.name == context_mailbox %}active{% endif %} {% if mb.status == 'disabled' %}disabled{% endif %}"
-       href="{{ ctx_target }}?mailbox={{ mb.name }}">
-      <span class="status-dot {% if not mb.shared %}dot-personal{% elif mb.status == 'pending' or mb.status == 'enabled' %}dot-pending{% elif mb.status == 'disabled' %}dot-disabled{% elif mb.is_autocreated %}dot-autocreated{% else %}dot-active{% endif %}"></span>
-      <span class="mb-name">{{ mb.name }}</span>
-      {% if not mb.reachable %}
-        <span class="mb-badge error">?</span>
-      {% elif mb.unread > 0 %}
-        <span class="mb-badge">{{ mb.unread }}</span>
-      {% else %}
-        <span class="mb-badge zero">·</span>
-      {% endif %}
-    </a>
-    {% endfor %}
+    <div id="sidebar-mailboxes" data-ctx-target="{{ ctx_target }}" data-context-mailbox="{{ context_mailbox }}">
+      {% for mb in sidebar_skeleton %}
+      <a class="mb-item mb-loading {% if mb.name == context_mailbox %}active{% endif %} {% if mb.status == 'disabled' %}disabled{% endif %}"
+         href="{{ ctx_target }}?mailbox={{ mb.name }}"
+         data-mb-name="{{ mb.name }}"
+         data-mb-status="{{ mb.status }}"
+         data-mb-shared="{% if mb.shared %}1{% else %}0{% endif %}"
+         data-mb-autocreated="{% if mb.is_autocreated %}1{% else %}0{% endif %}">
+        <span class="status-dot dot-loading"></span>
+        <span class="mb-name">{{ mb.name }}</span>
+        <span class="mb-badge loading">·</span>
+      </a>
+      {% endfor %}
+    </div>
   </nav>
   <div class="main">
     {% block content %}{% endblock %}
   </div>
 </div>
+<script>
+(function () {
+  const root = document.getElementById('sidebar-mailboxes');
+  if (!root) return;
+
+  function dotClassFor(item, reachable) {
+    if (!reachable) return 'dot-disabled';
+    const shared = item.dataset.mbShared === '1';
+    if (!shared) return 'dot-personal';
+    const status = item.dataset.mbStatus;
+    if (status === 'pending' || status === 'enabled') return 'dot-pending';
+    if (status === 'disabled') return 'dot-disabled';
+    if (item.dataset.mbAutocreated === '1') return 'dot-autocreated';
+    return 'dot-active';
+  }
+
+  function paint(item, info) {
+    item.classList.remove('mb-loading');
+    const dot = item.querySelector('.status-dot');
+    dot.className = 'status-dot ' + dotClassFor(item, info.reachable);
+    const badge = item.querySelector('.mb-badge');
+    badge.classList.remove('loading', 'zero', 'error');
+    if (!info.reachable) {
+      badge.classList.add('error');
+      badge.textContent = '?';
+    } else if (info.unread > 0) {
+      badge.textContent = String(info.unread);
+    } else {
+      badge.classList.add('zero');
+      badge.textContent = '·';
+    }
+  }
+
+  fetch('{% url "api_sidebar" %}', { credentials: 'same-origin' })
+    .then(r => r.ok ? r.json() : Promise.reject(r.status))
+    .then(data => {
+      const byName = {};
+      for (const mb of data.mailboxes) byName[mb.name] = mb;
+      root.querySelectorAll('.mb-item').forEach(item => {
+        const info = byName[item.dataset.mbName];
+        if (info) paint(item, info);
+        else paint(item, { reachable: false, unread: 0 });
+      });
+    })
+    .catch(() => {
+      // On failure, leave the skeleton in place but stop the pulse so it's not misleading.
+      root.querySelectorAll('.mb-item').forEach(item => {
+        item.classList.remove('mb-loading');
+        item.querySelector('.status-dot').classList.remove('dot-loading');
+        const badge = item.querySelector('.mb-badge');
+        badge.classList.remove('loading');
+        badge.classList.add('error');
+        badge.textContent = '?';
+      });
+    });
+})();
+</script>
+{% block extra_js %}{% endblock %}
 </body>
 </html>

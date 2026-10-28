@@ -48,3 +48,9 @@ Thumbs.db
 *.mov
 *.wmv
 
+# Runtime state — contains vault (mailbox passwords), SSH/DKIM keys, Pulumi state
+.ign8mail/
+
+# Claude Code session data
+.claude/
+

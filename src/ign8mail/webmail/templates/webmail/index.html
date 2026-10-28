@@ -65,32 +65,99 @@
     margin-right: 0.4rem;
   }
   .empty { padding: 2rem 1.5rem; color: var(--muted); font-size: 0.85rem; }
+  .loading { padding: 2rem 1.5rem; color: var(--muted); font-size: 0.85rem; }
+  .skeleton-row {
+    display: grid;
+    grid-template-columns: 9rem 1fr 2.6fr auto auto;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.6rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .skeleton-row .bar {
+    height: 12px;
+    background: linear-gradient(90deg, var(--surface2), var(--border), var(--surface2));
+    background-size: 200% 100%;
+    animation: shimmer 1.4s linear infinite;
+    border-radius: 4px;
+  }
+  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 </style>
 {% endblock %}
 
 {% block content %}
 <div class="page-header">
   <h1>{% if context_mailbox %}{{ context_mailbox }}{% else %}All mail{% endif %}</h1>
-  <span class="sub">{{ rows|length }} thread{{ rows|length|pluralize }}</span>
+  <span id="inbox-count" class="sub">loading…</span>
 </div>
-{% if rows %}
-<div>
-  {% for row in rows %}
-  <a class="thread-row {% if row.unseen_count %}unread{% endif %}"
-     href="{% url 'thread' row.root_mailbox row.root_uid %}">
-    <span class="mb-pill {% if row.shared %}shared{% else %}personal{% endif %}">{{ row.root_mailbox }}</span>
-    <span class="thread-from">
-      {% if row.unseen_count %}<span class="unseen-dot"></span>{% endif %}{{ row.senders }}
-    </span>
-    <span class="thread-subject">{{ row.subject }}</span>
-    <span class="thread-count {% if row.count > 1 %}multi{% endif %}">
-      {% if row.count > 1 %}{{ row.count }} msgs{% else %}1 msg{% endif %}
-    </span>
-    <span class="thread-date">{{ row.latest_date }}</span>
-  </a>
-  {% endfor %}
+<div id="inbox-rows"
+     data-context-mailbox="{{ context_mailbox }}"
+     data-window-days="{{ window_days|default_if_none:'' }}">
+  <div class="skeleton-row"><span class="bar"></span><span class="bar"></span><span class="bar"></span><span class="bar"></span><span class="bar"></span></div>
+  <div class="skeleton-row"><span class="bar"></span><span class="bar"></span><span class="bar"></span><span class="bar"></span><span class="bar"></span></div>
+  <div class="skeleton-row"><span class="bar"></span><span class="bar"></span><span class="bar"></span><span class="bar"></span><span class="bar"></span></div>
 </div>
-{% else %}
-<div class="empty">No messages.</div>
-{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+  const root = document.getElementById('inbox-rows');
+  const countEl = document.getElementById('inbox-count');
+  if (!root) return;
+
+  const ctxMb = root.dataset.contextMailbox || '';
+  const days = root.dataset.windowDays || '';
+  const params = new URLSearchParams();
+  if (ctxMb) params.set('mailbox', ctxMb);
+  if (days) params.set('days', days);
+  const url = '{% url "api_inbox" %}' + (params.toString() ? '?' + params.toString() : '');
+
+  function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s == null ? '' : String(s);
+    return d.innerHTML;
+  }
+
+  function threadHref(mailbox, uid) {
+    return '/m/' + encodeURIComponent(mailbox) + '/thread/' + encodeURIComponent(uid) + '/';
+  }
+
+  function renderRows(rows) {
+    if (!rows.length) {
+      root.innerHTML = '<div class="empty">No messages.</div>';
+      return;
+    }
+    const html = rows.map(row => {
+      const pillCls = 'mb-pill ' + (row.shared ? 'shared' : 'personal');
+      const rowCls = 'thread-row' + (row.unseen_count ? ' unread' : '');
+      const dot = row.unseen_count ? '<span class="unseen-dot"></span>' : '';
+      const countCls = 'thread-count' + (row.count > 1 ? ' multi' : '');
+      const countText = row.count > 1 ? (row.count + ' msgs') : '1 msg';
+      return (
+        '<a class="' + rowCls + '" href="' + esc(threadHref(row.root_mailbox, row.root_uid)) + '">' +
+          '<span class="' + pillCls + '">' + esc(row.root_mailbox) + '</span>' +
+          '<span class="thread-from">' + dot + esc(row.senders) + '</span>' +
+          '<span class="thread-subject">' + esc(row.subject) + '</span>' +
+          '<span class="' + countCls + '">' + esc(countText) + '</span>' +
+          '<span class="thread-date">' + esc(row.latest_date) + '</span>' +
+        '</a>'
+      );
+    }).join('');
+    root.innerHTML = html;
+  }
+
+  fetch(url, { credentials: 'same-origin' })
+    .then(r => r.ok ? r.json() : Promise.reject(r.status))
+    .then(data => {
+      const n = data.rows.length;
+      countEl.textContent = n + ' thread' + (n === 1 ? '' : 's');
+      renderRows(data.rows);
+    })
+    .catch(() => {
+      countEl.textContent = 'failed to load';
+      root.innerHTML = '<div class="empty">Failed to load messages. Refresh to try again.</div>';
+    });
+})();
+</script>
 {% endblock %}

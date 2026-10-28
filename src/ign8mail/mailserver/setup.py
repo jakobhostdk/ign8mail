@@ -304,7 +304,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/opt/ign8mail-webmail/venv/bin/gunicorn --workers 2 --bind 127.0.0.1:8080 wsgi:application
+ExecStart=/opt/ign8mail-webmail/venv/bin/gunicorn --workers 2 --timeout 120 --bind 127.0.0.1:8080 wsgi:application
 WorkingDirectory=/opt/ign8mail-webmail
 Restart=always
 RestartSec=5
@@ -829,6 +829,9 @@ class MailServerSetup:
             "    client_max_body_size 25m;\n"
             "    location / {\n"
             "        proxy_pass http://127.0.0.1:8080;\n"
+            "        proxy_connect_timeout 10s;\n"
+            "        proxy_send_timeout 180s;\n"
+            "        proxy_read_timeout 180s;\n"
             "        proxy_set_header Host $host;\n"
             "        proxy_set_header X-Real-IP $remote_addr;\n"
             "        proxy_set_header X-Forwarded-Proto https;\n"

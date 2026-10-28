@@ -15,7 +15,7 @@ from functools import wraps
 from pathlib import Path
 
 from django.conf import settings
-from django.http import HttpRequest, HttpResponse
+from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_POST
@@ -111,8 +111,26 @@ def _require_login(view_fn: Callable) -> Callable:  # type: ignore[type-arg]
 # ---- sidebar ------------------------------------------------------------
 
 
+def _sidebar_skeleton(cfg: dict, user: str) -> list[dict]:
+    """Fast, no-IMAP metadata for the sidebar skeleton. The unread counts are
+    filled in client-side via /api/sidebar/."""
+    visible = _visible_mailboxes(cfg, user)
+    autocreated = cfg["autocreated"]
+    out = []
+    for name in visible:
+        if not cfg["passwords"].get(name):
+            continue
+        out.append({
+            "name": name,
+            "status": _mailbox_status(name, autocreated),
+            "is_autocreated": name in autocreated,
+            "shared": _is_shared_mailbox(cfg, name),
+        })
+    return out
+
+
 def _sidebar_mailboxes(cfg: dict, user: str) -> list[dict]:
-    """Reachable mailbox summaries for the sidebar."""
+    """Reachable mailbox summaries for the sidebar (IMAP-heavy; JSON endpoint)."""
     visible = _visible_mailboxes(cfg, user)
     host = cfg["imap_host"]
     autocreated = cfg["autocreated"]
@@ -173,7 +191,7 @@ def _base_context(request: HttpRequest, cfg: dict, user: str, active: str = "") 
     return {
         "user": user,
         "domain": cfg["domain"],
-        "sidebar_mailboxes": _sidebar_mailboxes(cfg, user),
+        "sidebar_skeleton": _sidebar_skeleton(cfg, user),
         "active_mailbox": active,
         "context_mailbox": ctx_mb,
         "context_mailboxes": visible,
@@ -266,25 +284,22 @@ def logout_view(request: HttpRequest) -> HttpResponse:
 
 @_require_login
 def unified_inbox(request: HttpRequest) -> HttpResponse:
-    from datetime import datetime, timedelta, timezone
-
     cfg = _cfg()
     user = request.session["user"]
     ctx = _base_context(request, cfg, user)
-    ctx_mb = ctx["context_mailbox"]
-    mailboxes = [ctx_mb] if ctx_mb else ctx["context_mailboxes"]
+    ctx.update({"view_mode": "list"})
+    return render(request, "webmail/index.html", ctx)
+
+
+def _build_inbox_rows(cfg: dict, user: str, mailboxes: list[str], window_days: int | None) -> list[dict]:
+    from datetime import datetime, timedelta, timezone
 
     entries = _fetch_all_summaries(cfg, user, mailboxes)
     threads = _threading.group_threads(entries)
-
-    window_days = ctx["window_days"]
     if window_days:
         cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
         threads = [t for t in threads if t.latest_dt >= cutoff]
-
-    rows = [_thread_to_row(cfg, t) for t in threads[:200]]
-    ctx.update({"rows": rows, "view_mode": "list"})
-    return render(request, "webmail/index.html", ctx)
+    return [_thread_to_row(cfg, t) for t in threads[:200]]
 
 
 @_require_login
@@ -727,3 +742,34 @@ def _mailbox_action_client(name: str, action: str) -> HttpResponse:
 
 # Used in templates only — kept here for url-reverse convenience.
 _ = reverse
+
+
+# ---- async JSON endpoints -----------------------------------------------
+
+
+@_require_login
+def sidebar_api(request: HttpRequest) -> JsonResponse:
+    cfg = _cfg()
+    user = request.session["user"]
+    return JsonResponse({"mailboxes": _sidebar_mailboxes(cfg, user)})
+
+
+@_require_login
+def inbox_api(request: HttpRequest) -> JsonResponse:
+    cfg = _cfg()
+    user = request.session["user"]
+    visible = _visible_mailboxes(cfg, user)
+    requested = (request.GET.get("mailbox") or "").strip()
+    if requested and requested in visible:
+        mailboxes = [requested]
+    else:
+        mailboxes = visible
+    window_days: int | None = None
+    days_raw = (request.GET.get("days") or "").strip().lower()
+    if days_raw and days_raw != "all":
+        try:
+            window_days = max(1, int(days_raw))
+        except ValueError:
+            window_days = None
+    rows = _build_inbox_rows(cfg, user, mailboxes, window_days)
+    return JsonResponse({"rows": rows})

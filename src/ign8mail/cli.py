@@ -368,6 +368,141 @@ def sync_thunderbird(
     console.print(Panel(table, title="[bold]sync-thunderbird[/bold]"))
 
 
+@app.command(name="install-tb-autoconfig")
+def install_tb_autoconfig(
+    uninstall: bool = typer.Option(False, "--uninstall", help="Remove the autoconfig instead"),
+) -> None:
+    """One-time install of the Thunderbird autoconfig used by `reset-passwords`.
+
+    Writes `ign8mail.cfg` + `defaults/pref/autoconfig_ign8mail.js` into the
+    Thunderbird app bundle (requires sudo). On every TB startup, the autoconfig
+    looks for a credentials JSON in the active profile; if present it adds the
+    logins via `Services.logins.addLogin()` and deletes the file.
+    """
+    from ign8mail import thunderbird_autoconfig as tbac
+
+    resources = tbac.resources_dir()
+    if resources is None:
+        console.print("[red]Error:[/red] Thunderbird install not found.")
+        raise typer.Exit(1)
+
+    if uninstall:
+        tbac.uninstall(resources)
+        console.print(f"[green]Autoconfig removed from {resources}.[/green]")
+        return
+
+    try:
+        tbac.install(resources)
+    except tbac.AutoconfigInstallError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1)
+    console.print(f"[green]Autoconfig installed into {resources}.[/green]")
+
+
+@app.command(name="reset-passwords")
+def reset_passwords(
+    domain: str = typer.Option(..., envvar="IGN8_DOMAIN", help="Mail domain"),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+    profile: Path = typer.Option(None, help="Thunderbird profile directory (auto-detected if omitted)"),
+    imap_host: str = typer.Option("", help="IMAP hostname (default: mail.<domain>)"),
+    smtp_host: str = typer.Option("", help="SMTP hostname (default: mail.<domain>)"),
+) -> None:
+    """Force-feed Thunderbird with every active mailbox + its vault password.
+
+    Writes prefs.js accounts for anything new, drops a credentials file in the
+    profile, and launches Thunderbird. A one-time autoconfig installed into
+    the Thunderbird app bundle picks up the credentials on startup and adds
+    them via `Services.logins.addLogin()` — the same code path Thunderbird's
+    own UI uses, so TB will match them when authenticating.
+    """
+    from ign8mail import thunderbird_autoconfig as tbac
+
+    if not _vault.exists():
+        console.print(f"[red]Error:[/red] vault not found at {_vault}.")
+        raise typer.Exit(1)
+
+    tb_profile = profile or thunderbird.find_profile()
+    if tb_profile is None:
+        console.print("[red]Error:[/red] Thunderbird profile not found. Pass --profile explicitly.")
+        raise typer.Exit(1)
+
+    resources = tbac.resources_dir()
+    if resources is None:
+        console.print("[red]Error:[/red] Thunderbird install not found.")
+        raise typer.Exit(1)
+
+    if not tbac.is_installed(resources):
+        console.print(
+            "[red]Error:[/red] Thunderbird autoconfig is not installed.\n"
+            "Run [bold]ign8mail install-tb-autoconfig[/bold] once (prompts for sudo), "
+            "then re-run this command."
+        )
+        raise typer.Exit(1)
+
+    vdata = vault.load(_vault)
+    passwords: dict[str, str] = vdata.get("mailbox_passwords") or {}
+    autocreated: dict = vdata.get("autocreated_mailboxes") or {}
+    if not passwords:
+        console.print("[yellow]No mailbox passwords in vault — nothing to feed.[/yellow]")
+        raise typer.Exit(1)
+
+    imap_host = imap_host or f"mail.{domain}"
+    smtp_host = smtp_host or f"mail.{domain}"
+
+    credentials: dict[str, str] = {}
+    skipped: list[str] = []
+    no_pw: list[str] = []
+    for username, pw in sorted(passwords.items()):
+        ac = autocreated.get(username, {})
+        if ac.get("status") in ("silenced", "disabled"):
+            skipped.append(username)
+            continue
+        if not pw:
+            no_pw.append(username)
+            continue
+        credentials[username] = pw
+
+    if not credentials:
+        console.print("[yellow]No active mailboxes with passwords.[/yellow]")
+        raise typer.Exit(1)
+
+    was_running = _thunderbird_quit_and_relaunch(relaunch=False)
+    if was_running:
+        console.print("[dim]Thunderbird quit — writing profile…[/dim]")
+
+    existing_accounts = set(thunderbird.find_accounts(tb_profile))
+    added: list[str] = []
+    for username in sorted(credentials):
+        email = f"{username}@{domain}"
+        if email not in existing_accounts:
+            thunderbird.configure_account(tb_profile, email, username, imap_host)
+            added.append(username)
+    thunderbird.fix_usernames(tb_profile, domain)
+
+    creds_path = tbac.write_credentials(tb_profile, imap_host, smtp_host, credentials)
+
+    if platform.system() == "Darwin":
+        subprocess.Popen(["open", "-a", "Thunderbird"])
+    else:
+        subprocess.Popen(["thunderbird"])
+    console.print("[dim]Thunderbird launched — autoconfig will add credentials on startup.[/dim]")
+
+    table = Table(show_header=False, box=None, padding=(0, 1))
+    table.add_column("key", style="bold")
+    table.add_column("value")
+    table.add_row("Profile", str(tb_profile))
+    table.add_row("Autoconfig", str(resources / "ign8mail.cfg"))
+    table.add_row("Credentials file", str(creds_path))
+    table.add_row("Credentials fed", str(len(credentials)))
+    if added:
+        table.add_row("New accounts", ", ".join(added))
+    if skipped:
+        table.add_row("Skipped (inactive)", ", ".join(skipped))
+    if no_pw:
+        table.add_row("No password in vault", ", ".join(no_pw))
+    console.print(Panel(table, title="[bold]reset-passwords[/bold]"))
+
+
 @app.command(name="sync-aerc")
 def sync_aerc(
     domain: str = typer.Option(..., envvar="IGN8_DOMAIN", help="Mail domain"),
@@ -1487,7 +1622,7 @@ def enable(
 
     entries[name]["status"] = "enabled"
     vault_data = vault.load(_vault) if _vault.exists() else {}
-    vault_data.setdefault("mailbox_passwords", {})[name] = password
+    vault_data.setdefault("mailbox_passwords", {}).setdefault(name, password)
     vault_data["autocreated_mailboxes"] = entries
     vault.save(vault_data, _vault)
 
@@ -2129,6 +2264,94 @@ def passwd_recycle(
         console.print("[dim]aerc config not found — skipping.[/dim]")
 
     console.print(f"\n[dim]Run [bold]ign8mail switch-inbox <user>[/bold] to activate a mailbox.[/dim]")
+
+
+@app.command(name="passwd-reset")
+def passwd_reset(
+    username: str = typer.Argument(..., help="Mailbox local part (without @domain)"),
+    domain: str = typer.Option(..., envvar="IGN8_DOMAIN", help="Mail domain"),
+    password: str = typer.Option("", help="New password (default: generate a random one)"),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Directory used during `up`"),
+    mail_dir: Path = typer.Option(None, help="Local mail root (default: ~/Mail)"),
+    mbsyncrc: Path = typer.Option(None, help="mbsync symlink path (default: ~/.mbsyncrc)"),
+    msmtprc: Path = typer.Option(None, help="msmtp config path (default: ~/.msmtprc)"),
+    imap_host: str = typer.Option("", help="IMAP hostname (default: mail.<domain>)"),
+) -> None:
+    """Reset a single mailbox's password on the server, vault, and local clients."""
+    state_path = work_dir / "state.json"
+    if not state_path.exists():
+        console.print("[red]Error:[/red] No state file found — run `ign8mail up` first.")
+        raise typer.Exit(1)
+
+    state = json.loads(state_path.read_text())
+    ipv4 = state.get("ipv4", "")
+    priv_key = work_dir / "keys" / "ign8mail"
+
+    if not ipv4:
+        console.print("[red]Error:[/red] No server IP in state file.")
+        raise typer.Exit(1)
+    if not priv_key.exists():
+        console.print(f"[red]Error:[/red] SSH key not found at {priv_key}.")
+        raise typer.Exit(1)
+
+    home = Path.home()
+    mbsyncrc = mbsyncrc or home / ".mbsyncrc"
+    msmtprc = msmtprc or home / ".msmtprc"
+    mail_dir = mail_dir or home / "Mail"
+    imap_host = imap_host or f"mail.{domain}"
+    new_password = password or secrets.token_hex(12)
+
+    cfg = Config(
+        domain="placeholder",
+        admin_email="placeholder@placeholder.com",  # type: ignore[arg-type]
+        hetzner_token="placeholder",
+        cloudflare_token="placeholder",
+        cloudflare_zone_id="placeholder",
+    )
+    setup = MailServerSetup(cfg, host=ipv4, private_key_path=str(priv_key))
+    setup.connect(retries=3, delay=5)
+    try:
+        server_users = {u["username"] for u in setup.list_users()}
+        if username not in server_users:
+            console.print(
+                f"[red]Error:[/red] mailbox [cyan]{username}[/cyan] does not exist on the server."
+            )
+            raise typer.Exit(1)
+        setup.reset_password(username, new_password)
+        console.print(f"    Reset [cyan]{username}[/cyan] on server")
+    finally:
+        setup.disconnect()
+
+    if _vault.exists():
+        vault_data = vault.load(_vault)
+        vault_data.setdefault("mailbox_passwords", {})
+        vault_data["mailbox_passwords"][username] = new_password
+        vault.save(vault_data, _vault)
+        console.print(f"[dim]Vault updated at {_vault}[/dim]")
+
+    email = f"{username}@{domain}"
+    user_maildir = mail_dir / username
+    user_maildir.mkdir(parents=True, exist_ok=True)
+    profile = mbsyncrc.parent / f".mbsync.{username}"
+    _mbsync_write_profile(profile, username, new_password, imap_host, user_maildir)
+
+    if _msmtp_has_account(msmtprc, username):
+        _msmtp_update_password(msmtprc, username, new_password)
+        console.print(f"[dim]msmtp password updated for {username}[/dim]")
+
+    from ign8mail import aerc as _aerc
+    aerc_config = _aerc.find_config()
+    if aerc_config:
+        _aerc.configure_accounts(aerc_config, domain, imap_host, {username: new_password})
+        console.print(f"[green]aerc:[/green] {username} updated.")
+
+    table = Table(title="New credential", show_lines=False)
+    table.add_column("Username", style="cyan")
+    table.add_column("Email")
+    table.add_column("Password", style="yellow")
+    table.add_column("Profile")
+    table.add_row(username, email, new_password, str(profile))
+    console.print(table)
 
 
 @app.command()
@@ -2805,6 +3028,115 @@ def ssh(
 
     subprocess.run(["ssh-keygen", "-R", ipv4], capture_output=True)
     os.execvp("ssh", ["ssh", "-i", str(priv_key), "-o", "StrictHostKeyChecking=accept-new", f"{user}@{ipv4}"])
+
+
+# Patterns excluded from `save` — session caches, prior backups, and build junk.
+_SAVE_EXCLUDE = {"seen.db", "tui_archived.json", "__pycache__"}
+
+
+def _save_should_include(rel_path: Path) -> bool:
+    parts = rel_path.parts
+    for p in parts:
+        if p in _SAVE_EXCLUDE:
+            return False
+        if ".bak" in p or p.endswith(".pyc"):
+            return False
+    return True
+
+
+@app.command()
+def save(
+    archive: Path = typer.Argument(..., help="Destination archive path (e.g. ign8mail-backup.tar.gz)"),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="State directory to snapshot"),
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite destination if it exists"),
+) -> None:
+    """Snapshot the ign8mail config (vault, state, keys, Pulumi) into a tar.gz."""
+    import tarfile
+
+    if not work_dir.exists():
+        console.print(f"[red]Error:[/red] {work_dir} does not exist.")
+        raise typer.Exit(1)
+    if archive.exists() and not force:
+        console.print(f"[red]Error:[/red] {archive} exists. Pass --force to overwrite.")
+        raise typer.Exit(1)
+
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    included: list[tuple[Path, Path]] = []
+    for path in sorted(work_dir.rglob("*")):
+        if not path.is_file() and not path.is_symlink():
+            continue
+        rel = path.relative_to(work_dir)
+        if _save_should_include(rel):
+            included.append((path, rel))
+
+    if not included:
+        console.print(f"[yellow]Nothing to save under {work_dir}.[/yellow]")
+        raise typer.Exit(1)
+
+    with tarfile.open(archive, "w:gz") as tar:
+        for abs_path, rel in included:
+            tar.add(abs_path, arcname=str(Path(work_dir.name) / rel))
+
+    archive.chmod(0o600)
+    table = Table(show_header=False, box=None, padding=(0, 1))
+    table.add_column("key", style="bold")
+    table.add_column("value")
+    table.add_row("Archive", str(archive))
+    table.add_row("Source", str(work_dir))
+    table.add_row("Files", str(len(included)))
+    table.add_row("Size", f"{archive.stat().st_size:,} bytes")
+    console.print(Panel(table, title="[bold]save[/bold]"))
+
+
+@app.command()
+def load(
+    archive: Path = typer.Argument(..., help="Archive to restore (created by `save`)"),
+    work_dir: Path = typer.Option(Path(".ign8mail"), help="Target state directory"),
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite existing files in work_dir"),
+) -> None:
+    """Restore a saved ign8mail config into the state directory."""
+    import tarfile
+
+    if not archive.exists():
+        console.print(f"[red]Error:[/red] {archive} does not exist.")
+        raise typer.Exit(1)
+    if work_dir.exists() and any(work_dir.iterdir()) and not force:
+        console.print(
+            f"[red]Error:[/red] {work_dir} is not empty. Pass --force to overwrite."
+        )
+        raise typer.Exit(1)
+
+    work_dir.mkdir(parents=True, exist_ok=True)
+    extracted = 0
+    with tarfile.open(archive, "r:*") as tar:
+        for member in tar.getmembers():
+            name = Path(member.name)
+            # Strip the top-level archive dir (matches work_dir.name on save).
+            if len(name.parts) > 1:
+                rel = Path(*name.parts[1:])
+            else:
+                continue  # top-level dir entry
+            dest = work_dir / rel
+            if ".." in rel.parts or rel.is_absolute():
+                console.print(f"[yellow]Skipping suspicious entry {member.name}[/yellow]")
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if member.isdir():
+                dest.mkdir(parents=True, exist_ok=True)
+                continue
+            with tar.extractfile(member) as src:
+                data = src.read() if src else b""
+            dest.write_bytes(data)
+            dest.chmod(member.mode & 0o777)
+            extracted += 1
+
+    table = Table(show_header=False, box=None, padding=(0, 1))
+    table.add_column("key", style="bold")
+    table.add_column("value")
+    table.add_row("Archive", str(archive))
+    table.add_row("Target", str(work_dir))
+    table.add_row("Files restored", str(extracted))
+    console.print(Panel(table, title="[bold]load[/bold]"))
 
 
 def _mbsync_write_profile(path: Path, username: str, password: str, imap_host: str, maildir: Path) -> None:
