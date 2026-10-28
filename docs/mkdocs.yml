@@ -72,6 +72,7 @@ nav:
   - DNS records: dns.md
   - Configuration: configuration.md
   - Operations: operations.md
+  - Changelog: changelog.md
 
 extra:
   social:
